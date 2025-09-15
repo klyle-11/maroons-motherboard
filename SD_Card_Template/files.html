@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Nomad Files Page -->
+<!-- Nomad Files Page (with menu dark-mode sync) -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -16,11 +16,8 @@
       --radius: 8px;
       --shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
     }
-    *, *::before, *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html,body{height:100%}
     body {
       font-family: Arial, sans-serif;
       background: var(--bg);
@@ -30,6 +27,19 @@
       min-height: 100vh;
       padding: 0 0.5rem;
     }
+
+    /* Dark mode overrides (applied by .dark class on body) */
+    body.dark {
+      background: #07121a;
+      color: #e6eef8;
+    }
+    body.dark header { background: #052233; color: #e9f4ff; }
+    body.dark .toolbar { background: #07121a; border-bottom-color: rgba(255,255,255,0.04); }
+    body.dark .file-list li { background: #071827; box-shadow: 0 6px 18px rgba(0,0,0,0.35); color: #e6eef8; }
+    body.dark .back-btn { background: #03314a; color: #e6eef8; }
+    body.dark a { color: var(--primary); }
+    body.dark .file-info { color: #9fb6cc; }
+
     header {
       background: var(--primary);
       color: #fff;
@@ -48,10 +58,7 @@
       flex-wrap: wrap;
       gap: 0.5rem;
     }
-    header h1 {
-      font-size: 1.5rem;
-      white-space: nowrap;
-    }
+    header h1 { font-size: 1.5rem; white-space: nowrap; }
     .back-btn {
       color: #fff;
       text-decoration: none;
@@ -60,6 +67,7 @@
       border-radius: var(--radius);
       white-space: nowrap;
     }
+
     .toolbar {
       background: var(--bg);
       padding: 0.75rem 1rem;
@@ -86,6 +94,9 @@
       font-size: 0.9rem;
       min-width: 0;
     }
+    /* keep search visible / readable even in dark mode (JS also forces this) */
+    body.dark .toolbar input[type="search"] { background: #fff; color: #000; }
+
     .toolbar select {
       padding: 0.5rem 0.75rem;
       border: 1px solid #ccc;
@@ -94,6 +105,7 @@
       font-size: 0.9rem;
       min-width: 120px;
     }
+
     main {
       flex: 1;
       padding: 1rem;
@@ -101,9 +113,7 @@
       width: 100%;
       margin: 0 auto;
     }
-    ul.file-list {
-      list-style: none;
-    }
+    ul.file-list { list-style: none; padding: 0; margin: 0; }
     ul.file-list li {
       background: #fff;
       border-radius: var(--radius);
@@ -115,7 +125,11 @@
       align-items: center;
       gap: 1rem;
       word-break: break-word;
+      opacity: 0;
+      transform: translateY(10px);
+      animation: fadeInUp 0.3s forwards;
     }
+    @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     ul.file-list li a {
       color: var(--primary);
       text-decoration: none;
@@ -144,70 +158,19 @@
       padding-left: calc(1rem + 0.5rem);
       padding-right: calc(1rem + 0.5rem);
     }
+
     @media (max-width: 600px) {
-      body {
-        padding: 0 0.25rem;
-      }
-      header {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 0.5rem;
-        padding-left: calc(1rem + 0.25rem);
-        padding-right: calc(1rem + 0.25rem);
-        margin-left: -0.25rem;
-        margin-right: -0.25rem;
-      }
-      header h1 {
-        white-space: normal;
-        font-size: 1.3rem;
-      }
-      .back-btn {
-        width: 100%;
-        text-align: center;
-        white-space: normal;
-      }
-      .toolbar {
-        flex-direction: column;
-        align-items: stretch;
-        justify-content: center;
-        padding-left: calc(1rem + 0.25rem);
-        padding-right: calc(1rem + 0.25rem);
-        margin-left: -0.25rem;
-        margin-right: -0.25rem;
-      }
-      .toolbar input[type="search"],
-      .toolbar select {
-        flex: none;
-        width: 100%;
-        min-width: auto;
-      }
-      main {
-        padding: 0.75rem 0.5rem;
-        width: 100%;
-      }
-      ul.file-list li {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 0.5rem;
-        padding: 0.5rem 0.75rem;
-      }
-      ul.file-list li a {
-        max-width: 100%;
-        white-space: normal;
-        word-break: break-word;
-      }
-      .file-info {
-        white-space: normal;
-        width: 100%;
-        text-align: left;
-        min-width: auto;
-      }
-      footer {
-        padding-left: calc(1rem + 0.25rem);
-        padding-right: calc(1rem + 0.25rem);
-        margin-left: -0.25rem;
-        margin-right: -0.25rem;
-      }
+      body { padding: 0 0.25rem; }
+      header { flex-direction: column; align-items: flex-start; gap: 0.5rem; padding-left: calc(1rem + 0.25rem); padding-right: calc(1rem + 0.25rem); margin-left: -0.25rem; margin-right: -0.25rem; }
+      header h1 { white-space: normal; font-size: 1.3rem; }
+      .back-btn { width: 100%; text-align: center; white-space: normal; }
+      .toolbar { flex-direction: column; align-items: stretch; justify-content: center; padding-left: calc(1rem + 0.25rem); padding-right: calc(1rem + 0.25rem); margin-left: -0.25rem; margin-right: -0.25rem; }
+      .toolbar input[type="search"], .toolbar select { flex: none; width: 100%; min-width: auto; }
+      main { padding: 0.75rem 0.5rem; width: 100%; }
+      ul.file-list li { flex-direction: column; align-items: flex-start; gap: 0.5rem; padding: 0.5rem 0.75rem; }
+      ul.file-list li a { max-width: 100%; white-space: normal; word-break: break-word; }
+      .file-info { white-space: normal; width: 100%; text-align: left; min-width: auto; }
+      footer { padding-left: calc(1rem + 0.25rem); padding-right: calc(1rem + 0.25rem); margin-left: -0.25rem; margin-right: -0.25rem; }
     }
   </style>
 </head>
@@ -249,9 +212,34 @@
     <ul id="fileList" class="file-list"></ul>
   </main>
 
-  <footer>© <span id="year"></span> Jcorp Nomad</footer>
+  <footer>© <span id="year"></span> Jcorp Nomad</footer>
 
   <script>
+    /* ---------- THEME BOOT & SYNC ---------- */
+    const THEME_KEY = 'nomad_dark_mode';
+    function applyThemeFlag(dark){
+      document.body.classList.toggle('dark', !!dark);
+      // Keep search readable: force white background + black text for search inputs
+      const search = document.querySelector('.toolbar input[type="search"]');
+      if (search) { search.style.background = '#fff'; search.style.color = '#000'; }
+    }
+    // apply on load
+    (function initThemeFromStorage(){
+      try {
+        const saved = localStorage.getItem(THEME_KEY);
+        const isDark = (saved === 'true');
+        applyThemeFlag(isDark);
+      } catch (e) { applyThemeFlag(false); }
+    })();
+    // listen for theme changes in other tabs/pages (keeps pages in sync)
+    window.addEventListener('storage', (ev) => {
+      if (ev.key === THEME_KEY) {
+        const dark = ev.newValue === 'true';
+        applyThemeFlag(dark);
+      }
+    });
+
+    /* ---------- page logic ---------- */
     document.getElementById('year').textContent = new Date().getFullYear();
 
     const fileListEl = document.getElementById('fileList');
@@ -262,65 +250,95 @@
     let files = [], filtered = [];
 
     function formatBytes(bytes) {
-      if (bytes === 0) return '0 B';
+      if (!bytes && bytes !== 0) return '0 B';
       const k = 1024;
       const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      const i = Math.floor(Math.log(Math.max(bytes || 0, 1)) / Math.log(k));
       return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
     }
 
     async function init() {
       try {
-        const res = await fetch('/media.json');
-        const json = await res.json();
-        files = (json.files || []).map(f => {
-          const ext = f.file.split('.').pop().toLowerCase();
-          return { name: f.name, path: f.file.startsWith('/') ? f.file : '/' + f.file, type: ext, size: 0 };
-        });
-                
-        await Promise.all(
-          files.map(async (file) => {
-            try {
-              const response = await fetch(file.path, {
-                method: 'GET',
-                headers: { 'Range': 'bytes=0-0' },
-              });
-              const len = response.headers.get('Content-Range')?.split('/')[1];
-              file.size = parseInt(len) || 0;
-            } catch {
-              file.size = 0;
+        // try NDJSON index; fallback to generic /media.json if NDJSON missing
+        let text = null;
+        try {
+          const res = await fetch('/.system-index/Files.index.ndjson', {cache:'no-store', credentials:'same-origin'});
+          if (!res.ok) throw new Error('ndjson fetch failed');
+          text = await res.text();
+        } catch (e) {
+          // try a more generic path for index
+          try {
+            const res2 = await fetch('/Files.index.ndjson', {cache:'no-store', credentials:'same-origin'});
+            if (res2.ok) text = await res2.text();
+          } catch(e2){}
+        }
+
+        if (text && text.trim().length) {
+          files = text.trim().split('\n')
+            .map(line => {
+              try { return JSON.parse(line); } catch (e) { return null; }
+            })
+            .filter(Boolean)
+            .filter(obj => obj.t === 'f' || obj.t === 'f' /* ensure only files */)
+            .map(obj => {
+              const path = obj.p || (obj.n && obj.n.startsWith('/') ? obj.n : '/' + (obj.n || ''));
+              const ext = (obj.n || '').split('.').pop().toLowerCase();
+              return {
+                name: obj.n || path.split('/').pop(),
+                path: path,
+                type: ext,
+                size: obj.sz || obj.size || 0
+              };
+            });
+        } else {
+          // fallback: try media.json or /media.json
+          try {
+            const r = await fetch('/media.json', {cache:'no-store', credentials:'same-origin'});
+            if (r.ok) {
+              const j = await r.json();
+              const raw = j.files || j.Files || [];
+              files = raw.map(obj => {
+                const p = obj.path || obj.file || obj.url || ('/' + (obj.name || ''));
+                const name = obj.name || obj.title || p.split('/').pop();
+                const ext = (name.split('.').pop() || '').toLowerCase();
+                return { name, path: p, type: ext, size: obj.sz || obj.size || 0 };
+              }).filter(Boolean);
+            } else {
+              throw new Error('no fallback data');
             }
-        
-            // Update UI if visible
-            if (file._infoEl) {
-              file._infoEl.textContent = `${file.type.toUpperCase()} • ${formatBytes(file.size)}`;
-            }
-          })
-        );
+          } catch (e) {
+            console.error('No index available to build Files list', e);
+            fileListEl.innerHTML = '<li>Error loading files.</li>';
+            return;
+          }
+        }
 
         applyFilters();
       } catch (e) {
-        console.error('Error loading files:', e);
+        console.error('Error loading NDJSON:', e);
         fileListEl.innerHTML = '<li>Error loading files.</li>';
       }
     }
 
     function applyFilters() {
-      const term = searchInput.value.trim().toLowerCase();
+      const term = (searchInput.value || '').trim().toLowerCase();
       const type = typeFilter.value;
-      filtered = files.filter(f => f.name.toLowerCase().includes(term) && (type === 'all' || f.type === type));
+      filtered = files.filter(f =>
+        (term === '' || (f.name || '').toLowerCase().includes(term)) &&
+        (type === 'all' || (f.type || '').toLowerCase() === type)
+      );
       applySort();
     }
 
     function applySort() {
       const mode = sortSelect.value;
       filtered.sort((a, b) => {
-        if (mode === 'nameAsc') return a.name.localeCompare(b.name);
-        if (mode === 'nameDesc') return b.name.localeCompare(a.name);
-        if (mode === 'sizeAsc') return a.size - b.size;
-        if (mode === 'sizeDesc') return b.size - a.size;
-        if (mode === 'typeAsc') return a.type.localeCompare(b.type);
-        if (mode === 'typeDesc') return b.type.localeCompare(a.type);
+        if (mode === 'nameAsc') return (a.name || '').localeCompare(b.name || '');
+        if (mode === 'nameDesc') return (b.name || '').localeCompare(a.name || '');
+        if (mode === 'sizeAsc') return (a.size || 0) - (b.size || 0);
+        if (mode === 'sizeDesc') return (b.size || 0) - (a.size || 0);
+        if (mode === 'typeAsc') return (a.type || '').localeCompare(b.type || '');
+        if (mode === 'typeDesc') return (b.type || '').localeCompare(a.type || '');
         return 0;
       });
       render();
@@ -328,41 +346,33 @@
 
     function render() {
       fileListEl.innerHTML = '';
-      filtered.forEach(f => {
+      filtered.forEach((f, i) => {
         const li = document.createElement('li');
-    
+        li.style.animationDelay = `${i * 50}ms`;
+
         const link = document.createElement('a');
+        // clicking a file in the menu triggers downloads. For direct clicks here:
+        // set the href to the canonical path (server serves it) and let browser download
         link.href = f.path;
         link.download = f.name;
         link.textContent = f.name;
         link.title = f.name;
-    
+
         const info = document.createElement('div');
         info.className = 'file-info';
-        const sizeKnown = typeof f.size === 'number' && f.size > 0;
-        info.textContent = sizeKnown
-          ? `${f.type.toUpperCase()} • ${formatBytes(f.size)}`
-          : `${f.type.toUpperCase()} • …`;
-    
-        f._infoEl = info;
-    
+        info.textContent = `${(f.type || '').toUpperCase()} • ${formatBytes(f.size || 0)}`;
+
         li.appendChild(link);
         li.appendChild(info);
         fileListEl.appendChild(li);
       });
     }
 
+    searchInput.addEventListener('input', () => { clearTimeout(window.__debounce); window.__debounce = setTimeout(applyFilters, 150); });
+    typeFilter.addEventListener('change', applyFilters);
+    sortSelect.addEventListener('change', applySort);
 
-    searchInput.addEventListener('input', () => {
-      applyFilters();
-    });
-    typeFilter.addEventListener('change', () => {
-      applyFilters();
-    });
-    sortSelect.addEventListener('change', () => {
-      applySort();
-    });
-
+    // Boot
     init();
   </script>
 </body>

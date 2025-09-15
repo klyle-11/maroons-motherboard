@@ -1,11 +1,7 @@
 //Jcorp Nomad Project
 #include "Arduino.h"
 #define FF_USE_FASTSEEK 1
-#define SD_FREQ_KHZ 10000         // ✱✱ VERY IMPORTANT SETTING ✱✱
-                                  // This controls how fast reads from your SD Card can go, If you have a name brand fancy card you can go faster with better results. Check what your card recomends. 
-                                  // 10 000 kHz (10 MHz) = safest 
-                                  // 12000 kHz (12 MHz) = good 
-                                  // 20000 kHz (20 MHz) = fastest 
+#define SD_FREQ_KHZ 10000
 #include "WiFi.h"
 #include "ESPAsyncWebServer.h"
 #include "FS.h"
@@ -20,31 +16,146 @@
 #include <SPIFFS.h>
 #include <Preferences.h>
 #include "esp_wifi.h"
+#if defined(ARDUINO_ARCH_ESP32)
+  #include "soc/soc.h"
+  #include "soc/rtc_cntl_reg.h"
+  #include "esp_system.h"
+#endif
 #include "usb_mode.h"
 #include "boot_mode.h" // custom library for firmware switching
 void launch_usb_mode() {
 extern void usb_setup();
 extern void usb_loop();
-  // Initialize only the USB‑MSC path
   usb_setup();
 
-  // Then run only that path forever
   for (;;) {
     usb_loop();
-    // optionally: delay(0); yield();
   }
 }
 #define BOOT_BUTTON_PIN 0  
+#include <vector>
+#ifndef GLOBAL_INDEX_BUF
+#define GLOBAL_INDEX_BUF 1024
+#endif
+enum { HALF_INDEX_BUF = GLOBAL_INDEX_BUF / 2 };
+
+static char g_lineBuf[GLOBAL_INDEX_BUF];        // used to build JSON lines etc.
+static uint8_t g_fileBuf[4096];                 // file reads/writes
+static std::map<String, unsigned long> g_lastIndexSkipLog;
+static inline void freeString(String &s) { s = String(); }
+static inline void freeVectorString(std::vector<String> &v) { std::vector<String>().swap(v); }
+static inline void freeVectorUInt32(std::vector<uint32_t> &v) { std::vector<uint32_t>().swap(v); }
+static inline void closeFile(File &f) { if (f) f.close(); }
+#ifndef INDEX_MIN_HEAP
+#define INDEX_MIN_HEAP 30000UL
+#endif
+static inline bool enoughHeapForIndex(size_t estNeededBytes = 50000) {
+  size_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < (INDEX_MIN_HEAP + estNeededBytes)) {
+    Serial.printf("[Index] Not enough heap for index work (free=%u, need~%u). Deferring.\n",
+                  (unsigned)freeHeap, (unsigned)estNeededBytes);
+    return false;
+  }
+  return true;
+}
+static size_t jsonEscapeToBuf(const String &in, char *dst, size_t dstLen) {
+  if (!dst || dstLen == 0) return 0;
+  size_t pos = 0;
+  for (size_t i = 0; i < in.length() && pos + 1 < dstLen; ++i) {
+    char c = in.charAt(i);
+    if (c == '\\' || c == '\"') {
+      if (pos + 2 >= dstLen) break;
+      dst[pos++] = '\\';
+      dst[pos++] = c;
+    } else if (c == '\n') {
+      if (pos + 2 >= dstLen) break;
+      dst[pos++] = '\\';
+      dst[pos++] = 'n';
+    } else if (c == '\r') {
+      if (pos + 2 >= dstLen) break;
+      dst[pos++] = '\\';
+      dst[pos++] = 'r';
+    } else {
+      dst[pos++] = c;
+    }
+  }
+  dst[pos] = '\0';
+  return pos;
+}
+static void writeIndexEntryToFile(File &fout, char t, const String &name, const String &path, uint64_t sz = 0, uint64_t mt = 0) {
+  char escName[HALF_INDEX_BUF];
+  char escPath[HALF_INDEX_BUF];
+  jsonEscapeToBuf(name, escName, HALF_INDEX_BUF);
+  jsonEscapeToBuf(path, escPath, HALF_INDEX_BUF);
+
+  int pos = snprintf(g_lineBuf, GLOBAL_INDEX_BUF,
+                     "{\"t\":\"%c\",\"n\":\"%s\",\"p\":\"%s\"", t, escName, escPath);
+  if (pos < 0) pos = 0;
+  if (t == 'f') {
+    pos += snprintf(g_lineBuf + pos, (pos < (int)GLOBAL_INDEX_BUF) ? (GLOBAL_INDEX_BUF - pos) : 0,
+                    ",\"sz\":%llu,\"mt\":%llu}\n",
+                    (unsigned long long)sz, (unsigned long long)mt);
+  } else {
+    pos += snprintf(g_lineBuf + pos, (pos < (int)GLOBAL_INDEX_BUF) ? (GLOBAL_INDEX_BUF - pos) : 0,
+                    "}\n");
+  }
+
+  size_t wlen = strlen(g_lineBuf);
+  if (wlen) fout.write((const uint8_t*)g_lineBuf, wlen);
+}
 int screenBrightness = 100; // 0-100, default full brightness
 void handleConnector(AsyncWebServerRequest *request);
 unsigned long lastTempReading = 0;
 float currentTempC = 0.0;
 static bool sdScanned = false;
 const uint32_t SD_SCAN_DELAY = 5000;  // milliseconds after boot
-// ==================== CONFIGURATION ====================
+SemaphoreHandle_t sdMutex = NULL; 
+volatile bool sdbarDirty = false;
+struct IndexBuildArgs {
+  String dir;   // directory path to build index for (e.g. "/Music/Album")
+  String out;   // output index filename (e.g. "Music.index.ndjson" or "music.album.nested.ndjson")
+};
+static QueueHandle_t indexQueue = nullptr;
+// Last time UI bar was updated
+unsigned long lastSdbarUpdate = 0;
+void updateSDBAR() {
+  sdbarDirty = true;
+}
+#include <string> // used by std::map key
+static std::map<std::string, unsigned long> lastIndexRequestMs;
+const unsigned long INDEX_REQUEUE_COALESCE_MS = 2000UL; // 2 seconds coalescing
+static bool shouldCoalesceIndexRequest(const String &path) {
+  std::string k(path.c_str());
+  unsigned long now = millis();
+  auto it = lastIndexRequestMs.find(k);
+  if (it != lastIndexRequestMs.end()) {
+    if (now - it->second < INDEX_REQUEUE_COALESCE_MS) {
+      // too soon — drop this duplicate request
+      return false;
+    }
+  }
+  lastIndexRequestMs[k] = now;
+  return true;
+}
 
-// Max number of devices that can connect at once
-#define MAX_CLIENTS 4 // I recomend 4, If you want to try more knock yourself out!
+// Helper: get parent directory for a path ("/Music/song.mp3" -> "/Music")
+static String parentDirFromPath(const String &path) {
+  if (path.length() == 0) return "/";
+  int last = path.lastIndexOf('/');
+  if (last <= 0) return "/"; // root or malformed -> treat as root
+  String p = path.substring(0, last);
+  if (p.length() == 0) return "/";
+  return p;
+}
+
+// START: SD_MMC compatibility alias
+#include <SD_MMC.h>  
+#ifndef SD
+#define SD SD_MMC
+#endif
+#define INDEXER_SLEEP_MS 300000 // 5 minutes between background scans
+#define MAX_CLIENTS 4 
+String encodeIndexName(const String &path);
 
 struct AdminSettings {
   String rgbMode = "off";
@@ -58,15 +169,437 @@ struct AdminSettings {
 
 AdminSettings settings;
 const char* SETTINGS_PATH = "/config/settings.json";
-// =================== scary config ====================
-// SD card pinout for Waveshare ESP32-S3
 #define SD_CLK_PIN 14
 #define SD_CMD_PIN 15
 #define SD_D0_PIN 16
 #define SD_D1_PIN 18
 #define SD_D2_PIN 17
 #define SD_D3_PIN 21
-// ---------------URL Encode -------------
+const char *INDEX_DIR = "/.system-index";   // on-SD folder for index files
+const size_t INDEX_WRITE_CHUNK = 4096;      // flush buffer when larger than this
+// Normalize path: ensure leading '/', remove trailing '/'
+String normalizePath(const String &p_in){
+  if (p_in.length() == 0) return "/";
+  String p = p_in;
+  if (!p.startsWith("/")) p = "/" + p;
+  while (p.length() > 1 && p.endsWith("/")) p = p.substring(0, p.length()-1);
+  return p;
+}
+String encodeIndexName(const String &path_in) {
+  String p = path_in;
+  if (p.length() == 0) return String("root");
+
+  // normalize leading/trailing slashes
+  if (p.startsWith("/")) p = p.substring(1);
+  while (p.length() > 1 && p.endsWith("/")) p = p.substring(0, p.length()-1);
+  if (p.length() == 0) return String("root");
+
+  // split on slashes and sanitize each segment
+  std::vector<String> parts;
+  String cur;
+  for (size_t i = 0; i < p.length(); ++i) {
+    char c = p.charAt(i);
+    if (c == '/') {
+      if (cur.length()) parts.push_back(cur);
+      cur = "";
+    } else {
+      cur += c;
+    }
+  }
+  if (cur.length()) parts.push_back(cur);
+
+  // build encoded name joined by "__"
+  String out;
+  for (size_t i = 0; i < parts.size(); ++i) {
+    String tok = sanitizeToken(parts[i]);
+    if (tok.length() == 0) tok = "_";
+    if (i) out += "__";
+    out += tok;
+  }
+  if (out.length() == 0) out = "root";
+  return out;
+}
+// Sanitize a directory name into a filename token (keeps alnum, - and _, else underscore)
+String sanitizeToken(const String &s){
+  String out;
+  out.reserve(s.length());
+  for (size_t i = 0; i < s.length(); ++i) {
+    char c = s.charAt(i);
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) out += c;
+    else if (c == '-' || c == '_') out += c;
+    else out += '_';
+  }
+  return out;
+}
+
+// Minimal JSON escape used for NDJSON fields
+String jsonEscape(const String &in){
+  String out;
+  out.reserve(in.length() + 8);
+  for (size_t i = 0; i < in.length(); ++i) {
+    char c = in.charAt(i);
+    if (c == '\\' || c == '\"') { out += '\\'; out += c; }
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else out += c;
+  }
+  return out;
+}
+
+// Build NDJSON header line: {"_type":"dir","path":"/X","sig":"hex","count":N}
+String buildIndexHeader(const String &path, const String &sigHex, uint32_t count){
+  String h;
+  h.reserve(128);
+  h += "{\"_type\":\"dir\",\"path\":\"";
+  h += jsonEscape(path);
+  h += "\",\"sig\":\"";
+  h += sigHex;
+  h += "\",\"count\":";
+  h += String(count);
+  h += "}\n";
+  return h;
+}
+
+// Append one NDJSON entry (t: 'f'|'d', n: filename, p: absolute path, optional sz/mt)
+String buildIndexEntry(const char t, const String &name, const String &path, uint64_t sz=0, uint64_t mt=0){
+  String line;
+  line.reserve(160);
+  line += "{\"t\":\"";
+  line += t;
+  line += "\",\"n\":\"";
+  line += jsonEscape(name);
+  line += "\",\"p\":\"";
+  line += jsonEscape(path);
+  if (t == 'f') {
+    line += "\",\"sz\":";
+    line += String((unsigned long long)sz);
+    line += ",\"mt\":";
+    line += String((unsigned long long)mt);
+    line += "}\n";
+  } else {
+    line += "\"}\n";
+  }
+  return line;
+}
+// Tuneable: auto-generate nested indexes only for directories this small
+#define MAX_NESTED_AUTOGEN_ITEMS 40
+bool readIndexHeaderSig(const String &indexPath, String &outSig, uint32_t &outCount) {
+  outSig = "";
+  outCount = 0;
+  if (!SD_MMC.exists(indexPath)) return false;
+  File f = SD_MMC.open(indexPath, FILE_READ);
+  if (!f) return false;
+  String header = f.readStringUntil('\n');
+  f.close();
+  if (header.length() == 0) return false;
+
+  // Parse small JSON header
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, header);
+  if (err) return false;
+  const char* sig = doc["sig"];
+  if (sig) outSig = String(sig);
+  outCount = (uint32_t)(doc["count"] | doc["count"]); // header key is "count"
+  return true;
+}
+// ---------- Media file detector + safe recursive counter ----------
+static bool isMediaFile(const String &lowerName) {
+  int dot = lowerName.lastIndexOf('.');
+  if (dot < 0) return false;
+  String ext = lowerName.substring(dot); // includes the dot, e.g. ".mp4"
+
+  // Video (playback generally reliable: mp4, mov, mkv, webm, m4v)
+  if (ext == ".mp4"  || ext == ".mov"  || ext == ".mkv"  || ext == ".webm" || ext == ".m4v"
+   || ext == ".ts"   || ext == ".m2ts") return true;
+
+  // Audio (mp3/flac/wav plus common containers)
+  if (ext == ".mp3"  || ext == ".flac" || ext == ".wav"  || ext == ".aac"  || ext == ".m4a"
+   || ext == ".ogg"  || ext == ".opus") return true;
+
+  // Images
+  if (ext == ".jpg"  || ext == ".jpeg" || ext == ".png"  || ext == ".webp" || ext == ".avif"
+   || ext == ".gif"  || ext == ".bmp"  || ext == ".tiff" || ext == ".tif"  || ext == ".heic") return true;
+
+  // Books / Documents / Archives (PDF and EPUB primary; comic archives included, will support eventualy lol)
+  if (ext == ".pdf"  || ext == ".epub" || ext == ".txt"  || ext == ".html" || ext == ".htm"
+   || ext == ".cbz"  || ext == ".cbr"  || ext == ".azw3" || ext == ".mobi") return true;
+
+  // Other video containers we count (wont work, dont use these): .avi, .flv, .rmvb
+  if (ext == ".avi" || ext == ".flv" || ext == ".rmvb") return true;
+
+  return false;
+}
+
+unsigned int countMediaFiles(const String &dirPath) {
+  unsigned int count = 0;
+
+  File d = SD_MMC.open(dirPath);
+  if (!d || !d.isDirectory()) {
+    if (d) d.close();
+    return 0;
+  }
+
+  d.rewindDirectory();
+  File e;
+  while ((e = d.openNextFile())) {
+    if (e.isDirectory()) {
+      // e.name() returns the full path; recurse on it
+      String sub = String(e.name());
+      count += countMediaFiles(sub);
+    } else {
+      // Lower-case filename once for efficient extension checks
+      String name = String(e.name());
+      name.toLowerCase();
+
+      if (isMediaFile(name)) {
+        ++count;
+      }
+    }
+    e.close();
+    yield(); // keep watchdog happy during recursion/long scans
+  }
+
+  d.close();
+  return count;
+}
+
+// compatibility wrapper — some callers expect countDirItems()
+unsigned int countDirItems(const String &p) {
+  return countMediaFiles(p);
+}
+
+// Ensure INDEX_DIR exists (creates it if missing)
+void ensureIndexDir(){
+  if (!SD_MMC.exists(INDEX_DIR)) {
+    if (!SD_MMC.mkdir(INDEX_DIR)) {
+      Serial.printf("[Index] Failed to create index dir %s\n", INDEX_DIR);
+    } else {
+      Serial.printf("[Index] Created index dir %s\n", INDEX_DIR);
+    }
+  }
+}
+
+// FNV-1a 64-bit hash incremental update (used to compute signature)
+uint64_t fnv1a64_update(uint64_t h, const String &s){
+  const uint64_t FNV_PRIME = 0x100000001b3ULL;
+  uint64_t hash = h;
+  for (size_t i = 0; i < s.length(); ++i) {
+    hash ^= (uint8_t)s[i];
+    hash *= FNV_PRIME;
+  }
+  return hash;
+}
+
+// Rename or copy fallback: try rename first, if that fails try copy & remove.
+bool renameOrCopy(const String &src, const String &dst) {
+  if (SD_MMC.exists(dst)) SD_MMC.remove(dst);
+  if (SD_MMC.rename(src, dst)) return true;
+
+  File fsrc = SD_MMC.open(src, FILE_READ);
+  if (!fsrc) return false;
+  File fdst = SD_MMC.open(dst, FILE_WRITE);
+  if (!fdst) { fsrc.close(); return false; }
+
+  uint8_t buf[512];
+  while (fsrc.available()) {
+    size_t r = fsrc.read(buf, sizeof(buf));
+    if (r > 0) fdst.write(buf, r);
+  }
+  fsrc.close();
+  fdst.close();
+  SD_MMC.remove(src);
+  return true;
+}
+
+// Atomic write helper - writes tmp then moves to final (uses renameOrCopy)
+bool atomicWriteFile(const String &tmpPath, const String &finalPath) {
+  // final renameOrCopy already does the heavy lifting; here just ensure final exists
+  return renameOrCopy(tmpPath, finalPath);
+}
+void dumpSDRoot() {
+  Serial.println("[Index] dumpSDRoot(): listing /");
+  File r = SD_MMC.open("/");
+  if (!r) {
+    Serial.println("[Index] dumpSDRoot(): FAILED to open root '/'");
+    return;
+  }
+  r.rewindDirectory();
+  while (true) {
+    File e = r.openNextFile();
+    if (!e) break;
+    Serial.printf("[Index] root-entry: %s %s\n", e.name(), e.isDirectory() ? "(dir)" : "(file)");
+  }
+  r.close();
+}
+
+bool writeNDIndexForDir(const String &dirPath, const String &outFilename) {
+  // ensure index folder exists
+  if (!SD_MMC.exists("/.system-index")) SD_MMC.mkdir("/.system-index");
+
+  if (!enoughHeapForIndex()) {
+    Serial.printf("[Index] Skipping index for '%s' due to low memory (free=%u)\n", dirPath.c_str(), (unsigned)ESP.getFreeHeap());
+    return false;
+  }
+
+  String tmpPath = String("/.system-index/") + outFilename + ".tmp";
+  String finalPath = String("/.system-index/") + outFilename;
+
+  File fout = SD_MMC.open(tmpPath, FILE_WRITE);
+  if (!fout) {
+    Serial.printf("[Index] FAILED open tmp '%s'\n", tmpPath.c_str());
+    return false;
+  }
+
+  // --- normalize the incoming dir path to an absolute, normalized path ---
+  String normPath = dirPath;
+  if (!normPath.startsWith("/")) normPath = String("/") + normPath;
+  normPath = normalizePath(normPath); 
+
+  Serial.printf("[Index] Attempting open dir '%s'\n", normPath.c_str());
+  Serial.printf("[Index] exists('%s')=%d\n", normPath.c_str(), SD_MMC.exists(normPath.c_str()) ? 1 : 0);
+
+  File d = SD_MMC.open(normPath);
+  if (!d) {
+    fout.close();
+    SD_MMC.remove(tmpPath);
+    static bool rootDumped = false; // only dump once to avoid log spam
+    Serial.printf("[Index] open() failed for '%s'\n", normPath.c_str());
+    if (!rootDumped) {
+      dumpSDRoot(); // helpful dump to see what actually exists
+      rootDumped = true;
+    } else {
+      Serial.println("[Index] root already dumped previously, skipping dump");
+    }
+    Serial.printf("[Index] FAILED open dir '%s'\n", dirPath.c_str());
+    return false;
+  }
+
+  uint64_t sig = 0xcbf29ce484222325ULL;
+  unsigned long count = 0;
+
+  d.rewindDirectory();
+  while (true) {
+    File entry = d.openNextFile();
+    if (!entry) break;
+
+    String raw = String(entry.name());
+    int ls = raw.lastIndexOf('/');
+    String tail = (ls >= 0) ? raw.substring(ls + 1) : raw;
+    String full;
+    // Use normPath (normalized absolute dir) as the base when building the full path
+    if (raw.startsWith("/")) full = normalizePath(raw);
+    else full = normalizePath(normPath + "/" + raw);
+
+    if (entry.isDirectory()) {
+      writeIndexEntryToFile(fout, 'd', tail, full, 0, 0);
+      sig = fnv1a64_update(sig, full + "|" + tail);
+      ++count;
+    } else {
+      uint64_t fsz = entry.size();
+      uint64_t fmt = 0;
+      writeIndexEntryToFile(fout, 'f', tail, full, fsz, fmt);
+      sig = fnv1a64_update(sig, full + "|" + String(fsz) + "|" + String(fmt));
+      ++count;
+    }
+
+    entry.close();
+    yield();
+  }
+
+  d.close();
+  fout.flush();
+  fout.close();
+
+  // New safer replace flow:
+  // 1) Move the temp to a '.new' file (rename if possible, otherwise copy)
+  // 2) Swap '.new' into place (remove old final only after '.new' is present)
+  String newFinal = finalPath + ".new";
+
+  // Ensure no stale .new
+  if (SD_MMC.exists(newFinal)) SD_MMC.remove(newFinal);
+
+  bool moved = false;
+  if (SD_MMC.rename(tmpPath, newFinal)) {
+    moved = true;
+  } else {
+    // try to copy tmpPath -> newFinal (preserves original final until newFinal ready)
+    // use renameOrCopy-like logic but copy to newFinal explicitly
+    File fsrc = SD_MMC.open(tmpPath, FILE_READ);
+    if (fsrc) {
+      File fdst = SD_MMC.open(newFinal, FILE_WRITE);
+      if (fdst) {
+        uint8_t buf[512];
+        while (fsrc.available()) {
+          size_t r = fsrc.read(buf, sizeof(buf));
+          if (r > 0) fdst.write(buf, r);
+        }
+        fsrc.close();
+        fdst.close();
+        // remove tmp after copy success
+        SD_MMC.remove(tmpPath);
+        moved = true;
+      } else {
+        fsrc.close();
+      }
+    }
+  }
+
+  if (!moved) {
+    Serial.printf("[Index] FAILED to create staging new file '%s' from tmp '%s'\n", newFinal.c_str(), tmpPath.c_str());
+    SD_MMC.remove(tmpPath);
+    return false;
+  }
+
+  if (SD_MMC.exists(finalPath)) {
+    if (!SD_MMC.remove(finalPath)) {
+      Serial.printf("[Index] WARNING: couldn't remove old final '%s'\n", finalPath.c_str());
+    }
+  }
+
+  if (!SD_MMC.rename(newFinal, finalPath)) {
+    // fallback: try to copy newFinal -> finalPath
+    if (!renameOrCopy(newFinal, finalPath)) {
+      Serial.printf("[Index] FAILED atomic replace new->final '%s' -> '%s'\n", newFinal.c_str(), finalPath.c_str());
+      SD_MMC.remove(newFinal);
+      return false;
+    } else {
+      SD_MMC.remove(newFinal);
+    }
+  }
+
+  Serial.printf("[Index] Built bucket index %s for %s (count=%lu)\n", outFilename.c_str(), normPath.c_str(), count);
+  return true;
+}
+
+
+// ---------------- write bucket-level index ----------------
+// write top-level bucket index (e.g. /Music -> Music.index.ndjson)
+bool writeBucketIndex(const String &bucketPath) {
+  String name = bucketPath;
+  if (name.startsWith("/")) name = name.substring(1);
+  int slash = name.indexOf('/');
+  if (slash >= 0) name = name.substring(0, slash);
+  if (!name.length()) name = "root";
+  String outFile = String(name) + ".index.ndjson";
+  return writeNDIndexForDir(bucketPath, outFile);
+}
+
+// Build bucket index convenience wrapper (returns true on success)
+bool buildBucketIndex(const String &bucketPath) {
+  String bucket = bucketPath;
+  if (bucket.startsWith("/")) bucket = bucket.substring(1);
+  if (bucket.endsWith("/")) bucket = bucket.substring(0, bucket.length()-1);
+  if (bucket.length() == 0) bucket = "root";
+  String outFilename = bucket + ".index.ndjson";
+
+  bool ok = writeNDIndexForDir(bucketPath, outFilename);
+  if (ok) {
+    Serial.printf("[Index] Built bucket index %s for %s\n", outFilename.c_str(), bucketPath.c_str());
+    return true;
+  }
+  Serial.printf("[Index] Failed building bucket index for %s\n", bucketPath.c_str());
+  return false;
+}
 String urlencode(String str) {
   String encoded = "";
   char c;
@@ -174,7 +707,7 @@ void requestOneTimeGenerate() {
 void clearOneTimeGenerate() {
     SD_MMC.remove("/generate_once.flag");
 }
-//------------------- delete recursive for admin -------------
+//------------------- delete recursive -------------
 bool deleteRecursive(String path) {
   File entry = SD_MMC.open(path);
   if (!entry) return false;
@@ -239,11 +772,24 @@ bool lastWifiStatus = false;
 bool lastSDStatus = false;
 //Globals for SD scan
 unsigned long lastUpdateTime = 0;
-unsigned long lastSDScanTime = 0;
-const unsigned long SD_SCAN_INTERVAL = 60000; // 60 seconds
 uint64_t cachedUsedBytes = 0;
 uint64_t cachedTotalBytes = 0;
 unsigned long lastScanTime = 0;
+
+volatile bool requestIndexing = false;     // set by admin endpoint; consumed by index worker
+volatile bool indexingInProgress = false;  // guard so we never run multiple index runs concurrently
+volatile bool settingsReady = false;       // set to true after loadSettings() runs
+
+// New scan/index coordination flags
+volatile bool sdScanInProgress = false;    // true while SD scan is performing its initial pass
+volatile bool sdScanCompleted = false;     // set to true after the initial SD scan completes
+volatile bool bootIndexAllowed = false;    // set by boot coordinator once it's OK for index to run
+
+unsigned long lastSDScanTime = 0;
+const unsigned long SD_SCAN_INTERVAL = 60000; // 60 seconds
+
+// ---------- background indexing control ----------
+
 // Update the UI with the number of connected users
 void updateUI(int userCount) {
     char buffer[10];
@@ -262,7 +808,7 @@ void updateToggleStatus() {
         lastWifiStatus = currentWifiStatus;
     }
 
-bool currentSDStatus = SD_MMC.cardType() != CARD_NONE;   // ✱✱ NEW / CHANGED ✱✱
+bool currentSDStatus = SD_MMC.cardType() != CARD_NONE;  
     if (currentSDStatus != lastSDStatus) {
         if (currentSDStatus) {
             lv_obj_add_state(ui_SDcard, LV_STATE_CHECKED);
@@ -279,7 +825,7 @@ void opdsWrite(AsyncResponseStream *s, const String &chunk) {
     s->print(chunk);
 }
 //(OPDS thing)
-String xmlEscape(const String &in) {        // we already added this
+String xmlEscape(const String &in) {   
   String out;
   for (char c : in) {
     switch (c) {
@@ -292,7 +838,7 @@ String xmlEscape(const String &in) {        // we already added this
   return out;
 }
 
-String slugify(const String &in) {          // new helper
+String slugify(const String &in) {        
   String out;
   for (char c : in) {
     if (isalnum(c))       out += (char)tolower(c);
@@ -327,246 +873,74 @@ bool isValidExtension(const String& filename, const std::vector<String>& exts) {
   return false;
 }
 
-void generateMediaJSON() {
-    // ─── 1) Open the JSON file ───
-    File jsonFile = SD_MMC.open("/media.json", FILE_WRITE);
-    if (!jsonFile) {
-        Serial.println("[MediaGen] ERROR: cannot open media.json for writing");
-        return;
+void generateMediaJson(){
+  Serial.println("[Index] generateMediaJson() -> switched to NDJSON writer");
+
+  // ensure index dir
+  ensureIndexDir();
+
+  buildBucketIndex("/");       // writes root.index.ndjson
+  buildBucketIndex("/Shows");  // writes Shows.index.ndjson
+  buildBucketIndex("/Music");  // writes Music.index.ndjson
+
+  File showsDir = SD.open("/Shows");
+  if(showsDir){
+    while(true){
+      File s = showsDir.openNextFile();
+      if(!s) break;
+      if(s.isDirectory()){
+        String showName = String(s.name());
+        String showPath = "/Shows";
+        if(!showPath.endsWith("/")) showPath += "/";
+        showPath += showName;
+        String fileToken = "Shows__" + sanitizeToken(showName) + ".nested.ndjson";
+        writeNDIndexForDir(showPath, fileToken);
+        Serial.printf("[Index] wrote per-show nested %s for %s\n", fileToken.c_str(), showPath.c_str());
+      }
+      s.close();
     }
+    showsDir.close();
+  }
 
-    // ─── 2) Write opening brace ───
-    jsonFile.println("{");
-
-    // ─── 3) Initialize LVGL status screen ───
-    lv_obj_clear_flag(ui_MediaGen, LV_OBJ_FLAG_HIDDEN);
-    String logBuf = "Generating media.json...\n";
-    int logCount = 0;
-    const int LOG_UPDATE_INTERVAL = 20;
-    lv_textarea_set_text(ui_MediaGen, logBuf.c_str());
-    lv_timer_handler();
-
-    // Helper lambda to flush log
-    auto flushLog = [&]() {
-        lv_textarea_set_text(ui_MediaGen, logBuf.c_str());
-        lv_textarea_set_cursor_pos(ui_MediaGen, logBuf.length());
-        lv_timer_handler();
-        logBuf = "";
-        logCount = 0;
-    };
-
-    // ─── 4) Movies ───
-    jsonFile.println("  \"movies\": [");
-    File moviesDir = SD_MMC.open("/Movies");
-    bool firstMovie = true;
-    std::vector<String> movieExts = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".wmv", ".flv", ".mpg", ".mpeg", ".ts", ".3gp"};
-    while (File file = moviesDir.openNextFile()) {
-        yield();
-        String fname = String(file.name());
-        String ext = fname.substring(fname.lastIndexOf('.'));
-        ext.toLowerCase();
-        if (!file.isDirectory() && isValidExtension(fname, movieExts)) {
-            if (!firstMovie) jsonFile.println(",");
-            firstMovie = false;
-            String base = getFileBaseName(fname);
-            String cover = SD_MMC.exists("/Movies/" + base + ".jpg") ? "movies/" + base + ".jpg" : "placeholder.jpg";
-
-            jsonFile.print("    { \"name\": \"" + base + "\", \"cover\": \"" + cover + "\", \"file\": \"Movies/" + base + ext + "\" }");
-
-            logBuf += "- " + fname + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
+  String summary = "{\n  \"generated\": true,\n  \"buckets\": {\n";
+  // read index files to include counts
+  File idx = SD.open(INDEX_DIR);
+  if(idx){
+    while(true){
+      File f = idx.openNextFile();
+      if(!f) break;
+      String fname = String(f.name());
+      if(fname.endsWith(".index.ndjson") || fname.endsWith(".nested.ndjson")){
+        // read first line header
+        String header = f.readStringUntil('\n');
+        // try to parse count quickly by locating '"count":' substring
+        int pos = header.indexOf("\"count\":");
+        String countStr = "0";
+        if(pos >= 0){
+          int start = pos + 8;
+          int end = start;
+          while(end < header.length() && isDigit(header.charAt(end))) end++;
+          countStr = header.substring(start, end);
         }
+        summary += "    \"" + fname + "\": " + countStr + ",\n";
+      }
+      f.close();
     }
-    jsonFile.println();
-    jsonFile.println("  ],");
-    flushLog();
+    idx.close();
+  }
+  if(summary.endsWith(",\n")) summary = summary.substring(0, summary.length()-2) + "\n";
+  summary += "  }\n}\n";
 
-    // ─── 5) Shows ───
-    jsonFile.println("  \"shows\": [");
-    File showsRoot = SD_MMC.open("/Shows");
-    bool firstShow = true;
-    while (File folder = showsRoot.openNextFile()) {
-        yield();
-        if (folder.isDirectory()) {
-            if (!firstShow) jsonFile.println(",");
-            firstShow = false;
-            String showName = String(folder.name());
-            String cover = SD_MMC.exists("/Shows/" + showName + ".jpg") ? "shows/" + showName + ".jpg" : "placeholder.jpg";
+  // write summary to /media.json (small)
+  File mf = SD.open("/media.json", FILE_WRITE);
+  if(mf){
+    mf.print(summary);
+    mf.close();
+  } else {
+    Serial.println("[Index] failed to write /media.json");
+  }
 
-            jsonFile.println("    {\"name\": \"" + showName + "\", \"cover\": \"" + cover + "\", \"episodes\": [");
-
-            logBuf += "Show: " + showName + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-
-            File epDir = SD_MMC.open("/Shows/" + showName);
-            bool firstEp = true;
-            while (File ep = epDir.openNextFile()) {
-                yield();
-                String epName = String(ep.name());
-                String epExt = epName.substring(epName.lastIndexOf('.'));
-                epExt.toLowerCase();
-                if (!ep.isDirectory() && isValidExtension(epName, movieExts)) {
-                    if (!firstEp) jsonFile.println(",");
-                    firstEp = false;
-                    String epBase = getFileBaseName(epName);
-                    jsonFile.print("      { \"name\": \"" + epBase + "\", \"file\": \"Shows/" + showName + "/" + epBase + epExt + "\" }");
-
-                    logBuf += "  * " + epName + "\n";
-                    if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-                }
-            }
-            jsonFile.println();
-            jsonFile.println("    ]}");
-        }
-    }
-    jsonFile.println();
-    jsonFile.println("  ],");
-    flushLog();
-
-    // ─── 6) Books ───
-    jsonFile.println("  \"books\": [");
-    File booksDir = SD_MMC.open("/Books");
-    bool firstBook = true;
-    std::vector<String> bookExts = {".pdf", ".epub", ".mobi", ".azw3", ".txt"};
-    while (File file = booksDir.openNextFile()) {
-        yield();
-        String fname = String(file.name());
-        String ext = fname.substring(fname.lastIndexOf('.'));
-        if (!file.isDirectory() && isValidExtension(fname, bookExts)) {
-            if (!firstBook) jsonFile.println(",");
-            firstBook = false;
-            String base = getFileBaseName(fname);
-            String cover = SD_MMC.exists("/Books/" + base + ".jpg") ? "books/" + base + ".jpg" : "placeholder.jpg";
-
-            jsonFile.print("    { \"name\": \"" + base + "\", \"cover\": \"" + cover + "\", \"file\": \"Books/" + base + ext + "\" }");
-
-            logBuf += "- " + fname + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-        }
-    }
-    jsonFile.println();
-    jsonFile.println("  ],");
-    flushLog();
-
-    // ─── 7) Music ───
-    jsonFile.println("  \"music\": [");
-    File musicDir = SD_MMC.open("/Music");
-    bool firstMusic = true;
-    std::vector<String> musicExts = {".mp3", ".wav", ".flac"};
-    while (File file = musicDir.openNextFile()) {
-        yield();
-        String fname = String(file.name());
-        String ext = fname.substring(fname.lastIndexOf('.'));
-        ext.toLowerCase();
-        if (!file.isDirectory() && isValidExtension(fname, musicExts)) {
-            if (!firstMusic) jsonFile.println(",");
-            firstMusic = false;
-            String base = getFileBaseName(fname);
-            String cover = SD_MMC.exists("/Music/" + base + ".jpg") ? "music/" + base + ".jpg" : "placeholder.jpg";
-
-            jsonFile.print("    { \"name\": \"" + base + "\", \"cover\": \"" + cover + "\", \"file\": \"Music/" + base + ext + "\" }");
-
-            logBuf += "- " + fname + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-        }
-    }
-    jsonFile.println();
-    jsonFile.println("  ],");
-    flushLog();
-
-    // ─── 8) Playlists ───
-    jsonFile.println("  \"playlists\": {");
-    File musicRoot = SD_MMC.open("/Music");
-    bool firstPl = true;
-    while (File folder = musicRoot.openNextFile()) {
-        yield();
-        if (folder.isDirectory()) {
-            if (!firstPl) jsonFile.println(",");
-            firstPl = false;
-            String plName = String(folder.name());
-            jsonFile.println("    \"" + plName + "\": [");
-
-            logBuf += "Playlist: " + plName + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-
-            std::vector<String> tracks;
-            std::function<void(File,const String&)> collectTracks =
-                [&](File dir, const String& rel) {
-                    while (File t = dir.openNextFile()) {
-                        yield();
-                        String name = rel + "/" + String(t.name());
-                        if (t.isDirectory()) collectTracks(SD_MMC.open("/Music/" + name), name);
-                        else if (isValidExtension(name, musicExts)) tracks.push_back(name);
-                    }
-                };
-            collectTracks(SD_MMC.open("/Music/" + plName), plName);
-
-            for (size_t i = 0; i < tracks.size(); ++i) {
-                String tname = tracks[i].substring(tracks[i].lastIndexOf('/') + 1);
-                String base2 = getFileBaseName(tname);
-                String cover2 = SD_MMC.exists("/Music/" + base2 + ".jpg") ? "music/" + base2 + ".jpg" : "placeholder.jpg";
-                jsonFile.print("      { \"name\": \"" + base2 + "\", \"cover\": \"" + cover2 + "\", \"file\": \"Music/" + tracks[i] + "\" }");
-                if (i < tracks.size() - 1) jsonFile.println(",");
-
-                logBuf += "  * " + tname + "\n";
-                if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-            }
-            jsonFile.println();
-            jsonFile.println("    ]");
-        }
-    }
-    jsonFile.println("  },");
-    flushLog();
-
-    // ─── 9) Gallery ───
-    jsonFile.println("  \"gallery\": [");
-    File galleryDir = SD_MMC.open("/Gallery");
-    bool firstGal = true;
-    std::vector<String> mediaExts = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tiff", ".mp4", ".webm", ".mov", ".avi", ".mkv", ".flv"};
-    while (File f = galleryDir.openNextFile()) {
-        yield();
-        String fname = String(f.name());
-        String ext2 = fname.substring(fname.lastIndexOf('.')); ext2.toLowerCase();
-        if (!f.isDirectory() && isValidExtension(fname, mediaExts)) {
-            if (!firstGal) jsonFile.println(",");
-            firstGal = false;
-            String base = getFileBaseName(fname);
-            jsonFile.print("    { \"name\": \"" + base + "\", \"file\": \"Gallery/" + fname + "\" }");
-
-            logBuf += "- " + fname + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-        }
-    }
-    jsonFile.println();
-    jsonFile.println("  ],");
-    flushLog();
-
-    // ─── 10) Files ───
-    jsonFile.println("  \"files\": [");
-    File filesDir = SD_MMC.open("/Files");
-    bool firstFile = true;
-    while (File f = filesDir.openNextFile()) {
-        yield();
-        String fname = String(f.name());
-        if (!f.isDirectory()) {
-            if (!firstFile) jsonFile.println(",");
-            firstFile = false;
-            jsonFile.print("    { \"name\": \"" + fname + "\", \"file\": \"Files/" + fname + "\" }");
-
-            logBuf += "- " + fname + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-        }
-    }
-    jsonFile.println();
-    jsonFile.println("  ]");
-    flushLog();
-
-    // ─── 11) Close JSON and finish ───
-    jsonFile.println("}");
-    jsonFile.close();
-
-    Serial.println("[MediaGen] media.json created successfully.");
-    lv_obj_add_flag(ui_MediaGen, LV_OBJ_FLAG_HIDDEN);
+  Serial.println("[Index] generateMediaJson complete");
 }
 
 String absURL(const String &path) {
@@ -605,7 +979,6 @@ void handleOPDSRoot(AsyncWebServerRequest *request) {
     opdsWrite(res, "</feed>");
     request->send(res);
 }
-
 
 void handleOPDSBooks(AsyncWebServerRequest *request) {
     Serial.println("[OPDS] === handleOPDSBooks() called ===");
@@ -693,125 +1066,183 @@ void handleOPDSBooks(AsyncWebServerRequest *request) {
     opdsWrite(res,"</feed>");
     request->send(res);
 }
-
 // ==================== MEDIA STREAM HANDLER ====================
 // Handles video/audio streaming via range requests
 void handleRangeRequest(AsyncWebServerRequest *request) {
 
-    /* ----- validate path ----- */
-    if (!request->hasParam("file")) {
-        request->send(400, "text/plain", "File parameter missing");
-        return;
+    /* ----- resolve file path (either ?file=... OR direct /Archive/.. URL) ----- */
+    String filePath;
+    if (request->hasParam("file")) {
+        filePath = request->getParam("file")->value();
+    } else {
+        filePath = request->url(); // e.g. "/Archive/whatever.zim"
     }
 
-    String filePath = request->getParam("file")->value();
+    // Ensure absolute + normalized path
+    if (!filePath.startsWith("/")) filePath = "/" + filePath;
+    filePath = normalizePath(filePath);
+
+    Serial.printf("[RangeHandler] requested filePath='%s' method=%d Range=%s\n",
+                  filePath.c_str(), request->method(),
+                  request->hasHeader("Range") ? request->header("Range").c_str() : "");
+
+    /* ----- existence check ----- */
     if (!SD_MMC.exists(filePath)) {
+        Serial.printf("[RangeHandler] file not found: %s\n", filePath.c_str());
         request->send(404, "text/plain", "File not found");
         return;
     }
 
     /* ----- open file with recovery guard ----- */
     File file = SD_MMC.open(filePath, "r");
-    if (!file) {                                              // ✱✱ NEW / RECOVERY ✱✱
-        Serial.println("[SD] open() failed — trigger recovery");
-        sdErrorFlag            = true;                        // flag main loop
-        sdErrorCooldownUntil   = millis() + 5000;            // pause 5 s
-        request->send(503, "text/plain",
-                      "SD error — retrying shortly");        // browser will auto‑retry
+    if (!file) {
+        Serial.printf("[SD] open() failed for '%s' — trigger recovery\n", filePath.c_str());
+        sdErrorFlag = true;
+        sdErrorCooldownUntil = millis() + 5000;
+        request->send(503, "text/plain", "SD error — retrying shortly");
         return;
     }
 
-    size_t fileSize = file.size();
+    uint64_t fileSize = (uint64_t)file.size();
 
-    /* ----- debug ----- */
-    Serial.println("=== Range Request Debug ===");
-    Serial.println("File requested: " + filePath);
-    Serial.println("File size: " + String(fileSize));
-
-    /* ----- HEAD support ----- */
+    /* ----- HEAD support (headers only, no body) ----- */
     if (request->method() == HTTP_HEAD) {
-        Serial.println("HEAD request received");
-        AsyncWebServerResponse *headResponse =
-            request->beginResponse(200, "application/octet-stream", "");
-        headResponse->addHeader("Content-Length", String(fileSize));
+        String hrFileSize = humanSize(fileSize);
+        Serial.printf("[RangeHandler] HEAD %s size=%s — sending headers only\n",
+                      filePath.c_str(), hrFileSize.c_str());
+
+        AsyncWebServerResponse *headResponse = request->beginResponse(200, "application/octet-stream", "");
+        headResponse->addHeader("Accept-Ranges", "bytes");
+        headResponse->addHeader("Content-Length", String((unsigned long)fileSize));
+        headResponse->addHeader("Cache-Control", "no-cache");
+        headResponse->addHeader("Pragma", "no-cache");
         request->send(headResponse);
         file.close();
         return;
     }
 
-    /* ----- parse Range header ----- */
-    String rangeHeader = request->header("Range");
-    Serial.println("Raw Range header: " + rangeHeader);
+    /* ----- parse Range header (robust handling) ----- */
+    String rangeHeader = "";
+    if (request->hasHeader("Range")) rangeHeader = request->header("Range");
 
-    size_t startByte = 0, endByte = fileSize - 1;
-    if (rangeHeader.startsWith("bytes=")) {
-        int dashIndex = rangeHeader.indexOf('-');
-        startByte = rangeHeader.substring(6, dashIndex).toInt();
-        if (dashIndex + 1 < rangeHeader.length()) {
-            endByte = rangeHeader.substring(dashIndex + 1).toInt();
+    auto parseULL = [](const String &s) -> uint64_t {
+      if (!s.length()) return 0ULL;
+      return (uint64_t) strtoull(s.c_str(), NULL, 10);
+    };
+
+    uint64_t startByte = 0;
+    uint64_t endByte   = (fileSize == 0) ? 0 : (fileSize - 1);
+    uint64_t contentLength = fileSize;
+
+    if (rangeHeader.length() && rangeHeader.startsWith("bytes=") && fileSize > 0) {
+        String spec = rangeHeader.substring(6);
+        int dashIdx = spec.indexOf('-');
+        if (dashIdx >= 0) {
+            String sStart = spec.substring(0, dashIdx);
+            String sEnd   = spec.substring(dashIdx + 1);
+
+            if (sStart.length() == 0 && sEnd.length() > 0) {
+                uint64_t suffixLen = parseULL(sEnd);
+                if (suffixLen > 0) {
+                    startByte = (suffixLen >= fileSize) ? 0 : fileSize - suffixLen;
+                    endByte = fileSize - 1;
+                }
+            } else {
+                if (sStart.length()) startByte = parseULL(sStart);
+                if (sEnd.length())   endByte   = parseULL(sEnd);
+                else endByte = fileSize - 1;
+            }
         }
     }
-    if (endByte >= fileSize) endByte = fileSize - 1;
-    size_t contentLength = endByte - startByte + 1;
 
-    Serial.println("Computed startByte: " + String(startByte));
-    Serial.println("Computed endByte: " + String(endByte));
-    Serial.println("Content length: " + String(contentLength));
-    Serial.println("============================");
+    if (fileSize == 0) {
+      startByte = 0;
+      endByte = 0;
+      contentLength = 0;
+    } else {
+      if (startByte >= fileSize) startByte = fileSize - 1;
+      if (endByte >= fileSize)   endByte   = fileSize - 1;
+      if (endByte < startByte)   endByte   = startByte;
+      contentLength = (endByte >= startByte) ? (endByte - startByte + 1) : 0;
+    }
 
-    /* ----- create async response ----- */
-    String mimeType = "application/octet-stream"; // fallback
+    String hrFileSize = humanSize(fileSize);
+    String hrStart    = humanSize(startByte);
+    String hrEnd      = humanSize(endByte);
+    String hrLen      = humanSize(contentLength);
+    String rawRange   = rangeHeader.length() ? rangeHeader : String("-");
 
-    if (filePath.endsWith(".epub")) mimeType = "application/epub+zip";
-    else if (filePath.endsWith(".pdf")) mimeType = "application/pdf";
-    else if (filePath.endsWith(".mp3")) mimeType = "audio/mpeg";
+    if (filePath.endsWith(".zim") || filePath.endsWith(".ZIM")) {
+      bool exists = SD_MMC.exists(filePath.c_str());
+      Serial.printf("[RangeHandler] %s size=%s exists=%d Range=\"%s\" start=%s end=%s len=%s\n",
+                    filePath.c_str(), hrFileSize.c_str(), exists ? 1 : 0,
+                    rawRange.c_str(), hrStart.c_str(), hrEnd.c_str(), hrLen.c_str());
+    } else {
+      Serial.printf("[RangeHandler] %s size=%s Range=\"%s\" start=%s end=%s len=%s\n",
+                    filePath.c_str(), hrFileSize.c_str(),
+                    rawRange.c_str(), hrStart.c_str(), hrEnd.c_str(), hrLen.c_str());
+    }
+
+    /* ----- determine mime type ----- */
+    String mimeType = "application/octet-stream";
+    if      (filePath.endsWith(".epub")) mimeType = "application/epub+zip";
+    else if (filePath.endsWith(".pdf"))  mimeType = "application/pdf";
+    else if (filePath.endsWith(".mp3"))  mimeType = "audio/mpeg";
     else if (filePath.endsWith(".flac")) mimeType = "audio/flac";
-    else if (filePath.endsWith(".wav")) mimeType = "audio/wav";
-    else if (filePath.endsWith(".ogg")) mimeType = "audio/ogg";
-    else if (filePath.endsWith(".aac")) mimeType = "audio/aac";
-    else if (filePath.endsWith(".m4a")) mimeType = "audio/mp4";  // or audio/x-m4a
-    else if (filePath.endsWith(".mp4")) mimeType = "video/mp4";
+    else if (filePath.endsWith(".wav"))  mimeType = "audio/wav";
+    else if (filePath.endsWith(".ogg"))  mimeType = "audio/ogg";
+    else if (filePath.endsWith(".aac"))  mimeType = "audio/aac";
+    else if (filePath.endsWith(".m4a"))  mimeType = "audio/mp4";
+    else if (filePath.endsWith(".mp4"))  mimeType = "video/mp4";
     else if (filePath.endsWith(".webm")) mimeType = "video/webm";
-    else if (filePath.endsWith(".m4v")) mimeType = "video/x-m4v";
+    else if (filePath.endsWith(".m4v"))  mimeType = "video/x-m4v";
     else if (filePath.endsWith(".jpg") || filePath.endsWith(".jpeg")) mimeType = "image/jpeg";
-    else if (filePath.endsWith(".png")) mimeType = "image/png";
-    else if (filePath.endsWith(".cbz")) mimeType = "application/vnd.comicbook+zip";
-    else if (filePath.endsWith(".cbr")) mimeType = "application/vnd.comicbook-rar";
+    else if (filePath.endsWith(".png"))  mimeType = "image/png";
+    else if (filePath.endsWith(".cbz"))  mimeType = "application/vnd.comicbook+zip";
+    else if (filePath.endsWith(".cbr"))  mimeType = "application/vnd.comicbook-rar";
+
+    /* ----- async chunked response ----- */
     AsyncWebServerResponse *response = request->beginResponse(
-        mimeType,         // content type
-        contentLength,    // content length
-        [&, file, startByte, endByte, contentLength] (uint8_t *buffer, size_t maxLen, size_t index) mutable -> size_t {
-            /* seek & read */
-            file.seek(startByte + index);
-            size_t bytesToRead = min(maxLen, endByte - (startByte + index) + 1);
+        mimeType,
+        contentLength,
+        [file, startByte, endByte, contentLength] (uint8_t *buffer, size_t maxLen, size_t index) mutable -> size_t {
+            uint64_t pos64 = (uint64_t)startByte + (uint64_t)index;
+            file.seek((size_t)pos64);
+
+            uint64_t bytesLeft64 = (uint64_t)endByte - pos64 + 1ULL;
+            size_t bytesLeft = (bytesLeft64 > (uint64_t)SIZE_MAX) ? SIZE_MAX : (size_t)bytesLeft64;
+            size_t bytesToRead = (bytesLeft < maxLen) ? bytesLeft : maxLen;
+
             size_t bytesRead = file.read(buffer, bytesToRead);
 
-            /* ----- detect read failure ----- */
             if (bytesRead == 0) {
                 Serial.println("[SD] read() failed — recovery");
                 file.close();
                 sdErrorFlag = true;
                 sdErrorCooldownUntil = millis() + 5000;
-                return 0;  // aborts this chunk; client retries
+                return 0;
             }
 
-            /* close when finished */
-            if (index + bytesRead >= contentLength) {
+            if ((uint64_t)index + (uint64_t)bytesRead >= (uint64_t)contentLength) {
                 file.close();
             }
             return bytesRead;
         }
     );
 
-
- 
+    response->addHeader("Access-Control-Allow-Origin", "*");
+    response->addHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    response->addHeader("Access-Control-Allow-Headers", "Range, Content-Type, Accept");
     response->addHeader("Accept-Ranges", "bytes");
     response->addHeader("Content-Range", "bytes " + String(startByte) + "-" + String(endByte) + "/" + String(fileSize));
+    response->addHeader("Content-Length", String((unsigned long)contentLength));
     response->addHeader("Cache-Control", "no-cache");
     response->addHeader("Pragma", "no-cache");
-    response->setCode(206); // Partial Content
+    response->setCode(206);
     request->send(response);
 }
+
+
 void handleListFiles(AsyncWebServerRequest *request) {
     if (!request->hasParam("dir")) {
         request->send(400, "application/json", "{\"error\":\"Missing 'dir' parameter\"}");
@@ -856,11 +1287,73 @@ void handleListFiles(AsyncWebServerRequest *request) {
         }
         file = directory.openNextFile();
     }
-    directory.close();
 
+    // Serialize and send
     String response;
     serializeJson(arr, response);
+    directory.close();
     request->send(200, "application/json", response);
+}
+
+// ------------------------- ZIM LISTING -------------------------
+// Returns a JSON array of zim files found in /Archive
+// Each item: { "name": "<base name>", "path": "/Archive/<name>", "size": <bytes> }
+// As a warning this is a huge mess, Ill get it working soon, just needs to run fully browser side and kiwix docs suck.
+String escapeJsonString(const String &in) {
+  String out;
+  out.reserve(in.length());
+  for (size_t i = 0; i < in.length(); ++i) {
+    char c = in.charAt(i);
+    if (c == '\\' || c == '\"') {
+      out += '\\';
+      out += c;
+    } else if (c == '\b') out += "\\b";
+    else if (c == '\f') out += "\\f";
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else out += c;
+  }
+  return out;
+}
+// ------------------------- ZIM LISTING (patched) -------------------------
+
+void handleZimList(AsyncWebServerRequest *request) {
+  Serial.println("[ZIM] handleZimList (start)");
+  String resp = "[";
+  File root = SD_MMC.open("/Archive");
+  if (!root) {
+    AsyncWebServerResponse *err = request->beginResponse(500, "application/json",
+      "{\"error\":\"Archive directory not found\"}");
+    err->addHeader("Access-Control-Allow-Origin", "*");
+    request->send(err);
+    return;
+  }
+
+  File file = root.openNextFile();
+  if (file) {
+    // Only include the first file to keep UI simple
+    String name = String(file.name());
+    // Normalize to a leading-slash path so client can fetch relative to origin
+    String path = String("/Archive/") + name;
+    uint64_t sz = file.size();
+
+    String entry = "{\"name\":\"";
+    entry += escapeJsonString(name);
+    entry += "\",\"path\":\"";
+    entry += escapeJsonString(path);
+    entry += "\",\"size\":";
+    entry += String(sz);
+    entry += "}";
+    resp += entry;
+  }
+  root.close();
+  resp += "]";
+
+  AsyncWebServerResponse *r = request->beginResponse(200, "application/json", resp);
+  r->addHeader("Access-Control-Allow-Origin", "*");
+  request->send(r);
+  Serial.printf("[ZIM] handleZimList(): returned %u bytes\n", (unsigned)resp.length());
 }
 
 void handleFileUpload(AsyncWebServerRequest *request) {
@@ -897,11 +1390,19 @@ void handleRename(AsyncWebServerRequest *request) {
     }
 
     if (SD_MMC.rename(oldName, newName)) {
+        // enqueue indexes for the affected folders
+        String parentOld = parentDirFromPath(oldName);
+        String parentNew = parentDirFromPath(newName);
+        // If the rename moved file between folders, update both; otherwise updating one is enough.
+        enqueueIndexUpdateForPath(parentOld);
+        if (parentNew != parentOld) enqueueIndexUpdateForPath(parentNew);
+
         request->send(200, "application/json", "{\"status\":\"Rename successful\"}");
     } else {
         request->send(500, "application/json", "{\"error\":\"Rename failed\"}");
     }
 }
+
 void handleDelete(AsyncWebServerRequest *request) {
     if (!request->hasParam("filename", true)) {
         request->send(400, "application/json", "{\"error\":\"Missing 'filename' parameter\"}");
@@ -924,11 +1425,15 @@ void handleDelete(AsyncWebServerRequest *request) {
     }
 
     if (success) {
+        // enqueue a targeted index refresh for the parent folder
+        String parent = parentDirFromPath(filename);
+        enqueueIndexUpdateForPath(parent);
         request->send(200, "application/json", "{\"status\":\"Delete successful\"}");
     } else {
         request->send(500, "application/json", "{\"error\":\"Delete failed\"}");
     }
 }
+
 
 
 std::map<AsyncWebServerRequest*, String> uploadPaths;
@@ -1004,39 +1509,201 @@ void createSimpleUploadHandler(const String& mediaFolder, const char* endpoint) 
             }
 
             if (final && activeUploads.count(request)) {
-                Serial.println("[Upload] Upload complete for: " + filename);
-                activeUploads[request].close();
-                activeUploads.erase(request);
+              Serial.println("[Upload] Upload complete for: " + filename);
+              activeUploads[request].close();
+              activeUploads.erase(request);
+
+              //queue an index refresh for the parent folder
+              String changedDir = "/" + mediaFolder;       // e.g. "/Music"
+              enqueueIndexUpdateForPath(changedDir);
             }
         }
     );
 }
-void scanSDCardUsage() {
-    cachedUsedBytes = 0;
-    cachedTotalBytes = SD_MMC.cardSize();
+// ---------- SD usage persistence helpers ----------
+// File used to persist the last known usage to speed up boot
+static const char *SD_USAGE_FILE = "/.sdusage";
+// Save usage atomically
+void saveSdUsageToFile(uint64_t totalBytes, uint64_t usedBytes, unsigned long tsMillis = 0) {
+  // write JSON snapshot to tmp then rename (atomic-ish)
+  DynamicJsonDocument doc(256);
+  doc["total"] = totalBytes;
+  doc["used"]  = usedBytes;
+  doc["ts"]    = tsMillis ? tsMillis : millis();
 
-    std::function<void(File)> sumDirectory = [&](File dir) {
-        while (true) {
-            File entry = dir.openNextFile();
-            if (!entry) break;
-
-            if (entry.isDirectory()) {
-                sumDirectory(entry);
-            } else {
-                cachedUsedBytes += entry.size();
-            }
-            entry.close();
-        }
-    };
-
-    File root = SD_MMC.open("/");
-    if (root && root.isDirectory()) {
-        sumDirectory(root);
-        root.close();
+  String tmp = String(SD_USAGE_FILE) + ".tmp";
+  File f = SD_MMC.open(tmp, FILE_WRITE);
+  if (!f) {
+    static unsigned long lastFailLog = 0;
+    if (millis() - lastFailLog > 10000) {
+      Serial.println("[SDBAR] Warning: couldn't open temp sd usage file for write");
+      lastFailLog = millis();
     }
+    return;
+  }
+  serializeJson(doc, f);
+  f.close();
 
-    lastScanTime = millis();
+  // replace final file
+  if (SD_MMC.exists(SD_USAGE_FILE)) SD_MMC.remove(SD_USAGE_FILE);
+  if (!SD_MMC.rename(tmp, SD_USAGE_FILE)) {
+    // best-effort fallback: try copy + remove
+    // (some SD libraries fail rename across FS; file probably small so copy is fine)
+    File ft = SD_MMC.open(tmp, FILE_READ);
+    File ff = SD_MMC.open(SD_USAGE_FILE, FILE_WRITE);
+    if (ft && ff) {
+      while (ft.available()) ff.write(ft.read());
+      ft.close();
+      ff.close();
+      SD_MMC.remove(tmp);
+    } else {
+      if (ft) ft.close();
+      if (ff) ff.close();
+      // only warn rarely
+      static unsigned long lastRenameFail = 0;
+      if (millis() - lastRenameFail > 20000) {
+        Serial.println("[SDBAR] Warning: rename fallback failed for sd usage file");
+        lastRenameFail = millis();
+      }
+    }
+  }
+
+  // Throttled serial reporting: only print once every 10s
+  static unsigned long lastSaveLogMs = 0;
+  if (millis() - lastSaveLogMs >= 10000) { // 10s
+    lastSaveLogMs = millis();
+    float pct = 0.0f;
+    if (totalBytes > 0) pct = (float)usedBytes * 100.0f / (float)totalBytes;
+    Serial.printf("[SDBAR] Updated SD Usage: used=%llu total=%llu (%.1f%%)\n",
+                  (unsigned long long)usedBytes, (unsigned long long)totalBytes, pct);
+  }
+} 
+
+// Return true if loaded; values placed into cachedTotalBytes/cachedUsedBytes/lastScanTime
+bool loadSdUsageFromFile() {
+  if (!SD_MMC.exists(SD_USAGE_FILE)) return false;
+  File f = SD_MMC.open(SD_USAGE_FILE, FILE_READ);
+  if (!f) return false;
+  String s = f.readString();
+  f.close();
+
+  DynamicJsonDocument doc(256);
+  DeserializationError err = deserializeJson(doc, s);
+  if (err) {
+    Serial.println("[SDBAR] Failed parsing sd usage snapshot");
+    return false;
+  }
+  uint64_t t = (uint64_t)(doc["total"] | 0ULL);
+  uint64_t u = (uint64_t)(doc["used"]  | 0ULL);
+  unsigned long ts = (unsigned long)(doc["ts"] | 0UL);
+
+  // Only accept plausibly non-zero values
+  if (t == 0) return false;
+  cachedTotalBytes = t;
+  cachedUsedBytes  = u;
+  lastScanTime     = ts;
+  Serial.printf("[SDBAR] Loaded saved usage: total=%llu used=%llu (ts=%lu)\n", (unsigned long long)cachedTotalBytes, (unsigned long long)cachedUsedBytes, lastScanTime);
+  return true;
 }
+
+// Replace existing scanSDCardUsage() with this implementation
+void scanSDCardUsage() {
+  // Try to get the SD mutex for a short time so we don't block writes
+  if (sdMutex) {
+    // Block a little to get exclusive access. We are in background task, so it's OK to wait
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+      Serial.println("[SDBAR] scan skipped: SD mutex busy (background will retry)");
+      return;
+    }
+  }
+
+  // We'll release at the end
+  auto releaseSdScan = [](){
+    if (sdMutex) xSemaphoreGive(sdMutex);
+  };
+
+  // Initialize
+  cachedUsedBytes  = 0;
+  // Get a fast estimate for total. We'll attempt to normalize units below.
+  uint64_t reportedTotal = SD_MMC.cardSize(); // library-dependent units
+  uint32_t startMs = millis();
+  uint64_t lastSavedBytes = 0;
+
+  // Normalize reportedTotal so it is in bytes if needed.
+  // If reportedTotal looks much smaller than current used, try common multipliers (512 bytes per block).
+  if (reportedTotal > 0) {
+    if (reportedTotal < cachedUsedBytes) {
+      // try multiply by 512 (common block size), then 1024 as fallback
+      if ((reportedTotal * 512ULL) >= cachedUsedBytes) {
+        reportedTotal *= 512ULL;
+      } else if ((reportedTotal * 1024ULL) >= cachedUsedBytes) {
+        reportedTotal *= 1024ULL;
+      } else {
+        // make a best-effort conversion (most SD implementations use 512B blocks)
+        reportedTotal *= 512ULL;
+      }
+    }
+  } else {
+    // fallback to something reasonable (e.g., 64GB) if library failed
+    reportedTotal = cachedTotalBytes > 0 ? cachedTotalBytes : (64ULL * 1024ULL * 1024ULL * 1024ULL);
+  }
+  cachedTotalBytes = reportedTotal;
+
+  const uint32_t tickBudgetMs = 10;  // keep file ops in small chunks
+  uint32_t lastYield = millis();
+  uint64_t lastAnnounced = 0;
+
+  // recursive lambda to sum a directory
+  std::function<void(File)> sumDirectory = [&](File dir) {
+    while (true) {
+      File entry = dir.openNextFile();
+      if (!entry) break;
+
+      if (entry.isDirectory()) {
+        sumDirectory(entry);
+      } else {
+        cachedUsedBytes += entry.size();
+        // every few MB, poke UI and maybe persist snapshot
+        if ((cachedUsedBytes - lastAnnounced) > (8ULL * 1024ULL * 1024ULL)) {
+          sdbarDirty = true;
+          lastAnnounced = cachedUsedBytes;
+        }
+        // persist intermediate results every ~32MB progress
+        if ((cachedUsedBytes - lastSavedBytes) > (32ULL * 1024ULL * 1024ULL)) {
+          saveSdUsageToFile(cachedTotalBytes, cachedUsedBytes, millis());
+          lastSavedBytes = cachedUsedBytes;
+        }
+      }
+      entry.close();
+
+      // keep system responsive by yielding
+      if ((millis() - lastYield) > tickBudgetMs) {
+        lastYield = millis();
+        // Short delay allows other tasks to run and prevents watchdog hits
+        taskYIELD();
+      }
+    }
+  };
+
+  // Start walk
+  File root = SD_MMC.open("/");
+  if (root && root.isDirectory()) {
+    sumDirectory(root);
+    root.close();
+  }
+
+  // final save
+  saveSdUsageToFile(cachedTotalBytes, cachedUsedBytes, millis());
+
+  lastScanTime = millis();
+  sdbarDirty = true; // request UI thread to refresh
+
+  // release mutex
+  releaseSdScan();
+  Serial.printf("[SDBAR] scan complete: used=%llu total=%llu ms=%u\n",
+    (unsigned long long)cachedUsedBytes, (unsigned long long)cachedTotalBytes, (unsigned) (millis() - startMs));
+}
+
 
 void handleSDInfo(AsyncWebServerRequest *request) {
     DynamicJsonDocument doc(256);
@@ -1054,17 +1721,22 @@ void handleSDInfo(AsyncWebServerRequest *request) {
     request->send(200, "application/json", output);
 }
 
-void updateSDBAR() {
-    uint64_t totalBytes = SD_MMC.totalBytes();
-    uint64_t usedBytes = SD_MMC.usedBytes();
+extern uint64_t cachedTotalBytes; // set by scanSDCardUsage()
+extern uint64_t cachedUsedBytes;  // set by scanSDCardUsage()
 
-  if (totalBytes > 0) {
-    int usage = (usedBytes * 100) / totalBytes;
-    lv_bar_set_value(ui_sdbar, usage, LV_ANIM_OFF);
-  } else {
-    lv_bar_set_value(ui_sdbar, 0, LV_ANIM_OFF);
-  }
+static inline int calcUsagePct(uint64_t used, uint64_t total) {
+  if (total == 0) return 0;
+  uint64_t pct = (used * 100ULL) / total;
+  return (int)(pct > 100 ? 100 : pct);
 }
+
+static void updateSDBAR_UI_ThreadOnly() {
+  // LVGL must be touched from the UI thread/task (your main loop/Timer_Loop context)
+  int pct = calcUsagePct(cachedUsedBytes, cachedTotalBytes);
+  lv_bar_set_value(ui_sdbar, pct, LV_ANIM_OFF);
+  sdbarDirty = false;
+}
+
 bool checkGenerateFlagFile() {
     if (SD_MMC.exists("/.generate_flag")) {
         Serial.println("[BOOT] Found /.generate_flag, will generate media.json");
@@ -1173,9 +1845,457 @@ int getConnectedUserCount() {
   return WiFi.softAPgetStationNum();
 }
 void sdScanTask(void* pvParameters) {
-  scanSDCardUsage();
-  lv_timer_handler();
-  updateSDBAR();
+  Serial.println("[SDScan] sdScanTask starting (background)");
+  sdScanInProgress = true;
+  sdScanCompleted = false;
+
+  // Run the single full scan (this is your existing function; keep as-is)
+  scanSDCardUsage();      // updates cachedUsedBytes/Total
+  sdbarDirty = true;      // request UI thread to refresh
+
+  // Mark initial pass complete so indexer can run
+  sdScanInProgress = false;
+  sdScanCompleted = true;
+  Serial.println("[SDScan] initial SD scan complete; sdScanCompleted = true");
+
+  // If desired: keep this task short-lived (delete itself)
+  vTaskDelete(NULL);
+}
+
+
+
+void generateMediaJSON(){ generateMediaJson(); }
+
+// --- onverts “how busy” into small work budgets and pauses.
+static inline int getServerLoadScore() {
+  // 0 = idle … higher = busier
+  // Count stations + uploads; cheap approximation but good enough to throttle.
+  extern std::map<AsyncWebServerRequest*, File> activeUploads; // already exists
+  int users   = getConnectedUserCount();
+  int uploads = (int)activeUploads.size();
+  return users * 3 + uploads * 5;
+}
+
+// Returns a pair: { entriesToProcessBeforePause, pauseMsAfterBatch }
+static inline std::pair<int,int> chooseWorkBudget() {
+  int score = getServerLoadScore();
+  if (score <= 0) return { 300, 1 };     // idle: move fast but yield
+  if (score <= 3) return { 150, 2 };     // light load
+  if (score <= 6) return { 80,  5 };     // a bit busy
+  if (score <= 10) return { 40, 10 };    // busy
+  return { 20, 20 };                     // very busy: crawl
+}
+
+void indexWorkerTask(void *param) {
+  const char *buckets[] = { "/Shows", "/Music", "/Movies", "/Books", "/Gallery", "/Files",  "/", NULL };
+
+  // Wait until settings have been loaded so we can honor autoGenerateMedia
+  while (!settingsReady) {
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  // If settings.autoGenerateMedia OR requestIndexing was set before we started,
+  // we queue a full initial sweep. But we won't block setup — this Task runs async.
+  if (settings.autoGenerateMedia || requestIndexing) {
+    Serial.println("[IndexWorker] Performing boot initial sweep (autoGenerateMedia ON or requestIndexing)");
+    indexingInProgress = true;
+
+    for (int i = 0; buckets[i]; ++i) {
+      const String bucket = String(buckets[i]);
+      auto [batch, pauseMs] = chooseWorkBudget();
+
+      Serial.printf("[IndexWorker] Initial update bucket=%s (batch=%d pause=%dms)\n",
+                    bucket.c_str(), batch, pauseMs);
+
+      // Build the main bucket index (this is fast/no-op when up-to-date)
+      buildBucketIndex(bucket);
+
+      // small pause to let other tasks run
+      vTaskDelay(pdMS_TO_TICKS(pauseMs));
+
+      // Drain any queued explicit index requests quickly (non-blocking)
+      IndexBuildArgs *msg = nullptr;
+      while (indexQueue && xQueueReceive(indexQueue, &msg, 0) == pdTRUE && msg) {
+        writeNDIndexForDir(msg->dir, msg->out);
+        delete msg;
+        vTaskDelay(pdMS_TO_TICKS(pauseMs));
+      }
+    }
+
+    // Mark the boot/index request consumed
+    requestIndexing = false;
+    indexingInProgress = false;
+
+    // Write /boot_done.flag so next boot can skip repeated full-scan if desired
+    File f = SD_MMC.open("/boot_done.flag", FILE_WRITE);
+    if (f) {
+      f.print("1");
+      f.close();
+      Serial.println("[IndexWorker] Wrote /boot_done.flag after initial sweep");
+    } else {
+      Serial.println("[IndexWorker] WARNING: Could not write /boot_done.flag");
+    }
+
+    Serial.println("[IndexWorker] Initial sweep complete; switching to event-driven mode");
+  } else {
+    Serial.println("[IndexWorker] Skipping initial sweep because autoGenerateMedia == false and no requestIndexing");
+    Serial.println("[IndexWorker] Switching to event-driven mode");
+  }
+
+  // ---- Event-driven loop: regularly check for queued full-index requests OR queued jobs ----
+  for (;;) {
+    // If a full boot-like index was requested after startup, perform it
+    if (requestIndexing && !indexingInProgress) {
+      Serial.println("[IndexWorker] Detected requestIndexing flag in event loop; starting full sweep");
+      indexingInProgress = true;
+      requestIndexing = false;
+
+      for (int i = 0; buckets[i]; ++i) {
+        const String bucket = String(buckets[i]);
+        auto [batch, pauseMs] = chooseWorkBudget();
+
+        Serial.printf("[IndexWorker] (queued) update bucket=%s (batch=%d pause=%dms)\n",
+                      bucket.c_str(), batch, pauseMs);
+
+        buildBucketIndex(bucket);
+        vTaskDelay(pdMS_TO_TICKS(pauseMs));
+
+        IndexBuildArgs *msg = nullptr;
+        while (indexQueue && xQueueReceive(indexQueue, &msg, 0) == pdTRUE && msg) {
+          writeNDIndexForDir(msg->dir, msg->out);
+          delete msg;
+          vTaskDelay(pdMS_TO_TICKS(pauseMs));
+        }
+      }
+
+      // mark boot done on success
+      File f = SD_MMC.open("/boot_done.flag", FILE_WRITE);
+      if (f) { f.print("1"); f.close(); }
+
+      indexingInProgress = false;
+      Serial.println("[IndexWorker] queued full sweep complete");
+      continue; // check queue again
+    }
+
+    // Otherwise, block on indexQueue waiting for specific directory tasks
+    IndexBuildArgs *msg = nullptr;
+    if (indexQueue && xQueueReceive(indexQueue, &msg, pdMS_TO_TICKS(500)) == pdTRUE && msg) {
+      Serial.printf("[IndexWorker] Processing queued index for '%s'\n", msg->dir.c_str());
+      writeNDIndexForDir(msg->dir, msg->out);
+      delete msg;
+      // after a queued build, loop again (we don't exit)
+    } else {
+      // No message — light sleep so we don't busy-spin
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+  }
+}
+
+
+
+// Helper: is this request for a top-level bucket root? ("/", "/Shows", "/Music", "/Movies", "/Books", "/Gallery", "/Files")
+static inline bool isBucketRootPath(const String &p) {
+  if (p == "/") return true;
+  if (!p.startsWith("/")) return false;
+  // Only one leading slash allowed, and NO second slash => bucket root
+  int nextSlash = p.indexOf('/', 1);
+  return (nextSlash < 0);
+}
+void enqueueIndexUpdateForPath(const String &path) {
+  // Coalesce quickly repeated requests for the same path.
+  if (!shouldCoalesceIndexRequest(path)) {
+    Serial.printf("[Index] Coalesced duplicate index request for '%s'\n", path.c_str());
+    return;
+  }
+
+  // Decide target index file from path (bucket or nested)
+  String out;
+  if (isBucketRootPath(path)) {
+    String bucket = path == "/" ? "root" : path.substring(1);
+    out = bucket + ".index.ndjson";
+  } else {
+    out = encodeIndexName(path) + ".nested.ndjson";
+  }
+
+  // Allocate message and push pointer onto queue
+  IndexBuildArgs *msg = new IndexBuildArgs{ path, out };
+
+  // Try to enqueue quickly (short timeout)
+  if (indexQueue && xQueueSend(indexQueue, &msg, pdMS_TO_TICKS(10)) == pdTRUE) {
+    // enqueued — good
+    Serial.printf("[Index] Enqueued index update for '%s' -> %s\n", path.c_str(), out.c_str());
+    return;
+  }
+
+  // If queue doesn't exist or is full, attempt inline build as a fallback
+  if (enoughHeapForIndex()) {
+    Serial.printf("[Index] Queue unavailable; running inline index for '%s'\n", path.c_str());
+    writeNDIndexForDir(path, out);
+    delete msg;
+    return;
+  }
+
+  // Low-memory / queue-full: log and drop (coalesce will prevent spam).
+  Serial.printf("[Index] Queue full & low memory; unable to index '%s' now\n", path.c_str());
+  delete msg;
+}
+
+static void spawnIndexBuild(const String &dirPath, const String &outName) {
+  IndexBuildArgs *args = new IndexBuildArgs{ dirPath, outName };
+  // lightweight task on core 1, low prio
+  // Single-build task: used only when spawnIndexBuild creates a dedicated task.
+  // Put this definition before spawnIndexBuild/use sites.
+}
+void immediateEnqueueTopLevelTask(void *pv) {
+  Serial.println("[Index] immediateEnqueueTopLevelTask: enqueuing top-level dirs due to admin request");
+  File root = SD_MMC.open("/");
+  if (!root || !root.isDirectory()) {
+    if (root) root.close();
+    Serial.println("[Index] immediateEnqueueTopLevelTask: root not available, exiting");
+    vTaskDelete(NULL);
+    return;
+  }
+
+  File entry;
+  while ((entry = root.openNextFile())) {
+    if (entry.isDirectory()) {
+      String path = String(entry.name()); // e.g. "/Music"
+      // enqueue the bucket root; coalescing will guard against duplicates
+      enqueueIndexUpdateForPath(path);
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    entry.close();
+  }
+  root.close();
+
+  // Mark the request consumed (admin handler set requestIndexing earlier)
+  requestIndexing = false;
+
+  Serial.println("[Index] immediateEnqueueTopLevelTask: enqueue complete, exiting");
+  vTaskDelete(NULL);
+}
+void indexBuildTask(void *param) {
+  IndexBuildArgs *a = (IndexBuildArgs*) param;
+  if (a) {
+    writeNDIndexForDir(a->dir, a->out);
+    delete a;
+  }
+  vTaskDelete(NULL); // terminate the task
+}
+void storageMonitorTask(void *param) {
+    while (true) {
+        uint64_t total = SD_MMC.totalBytes();
+        uint64_t used = SD_MMC.usedBytes();
+        float percent = (float)used / (float)total * 100.0f;
+
+        // Instead of calling UI here, set dirty flag
+        sdbarDirty = true;
+
+        vTaskDelay(pdMS_TO_TICKS(10000)); // every 10s
+    }
+}
+// Run a single top-level scan at boot to catch offline changes. Then terminate.
+void incrementalScanTask(void *param) {
+    Serial.println("[Index] incrementalScanTask: starting one-shot boot scan of top-level dirs");
+    File root = SD_MMC.open("/");
+    if (!root || !root.isDirectory()) {
+        if (root) root.close();
+        Serial.println("[Index] incrementalScanTask: root not available, exiting task");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // Walk the root once and enqueue index builds one-per-top-level-dir.
+    File entry;
+    while ((entry = root.openNextFile())) {
+        if (entry.isDirectory()) {
+            String path = String(entry.name()); // e.g. "/Music"
+            // Try to enqueue; coalescing will guard against duplicates.
+            enqueueIndexUpdateForPath(path);
+            // tiny yield between enqueues
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        entry.close();
+    }
+
+    root.close();
+    Serial.println("[Index] incrementalScanTask: completed one-shot boot scan, exiting");
+    vTaskDelete(NULL); // done 
+}
+void bootCoordinatorTask(void *pv) {
+  Serial.println("[BootCoord] bootCoordinatorTask starting; delaying so UI can come up...");
+
+  // Short delay so webserver/UI are ready before heavy work starts (adjust as needed)
+  vTaskDelay(pdMS_TO_TICKS(3000));
+
+  // Ensure settings have loaded (settingsReady should be set where loadSettings() runs)
+  int settingsWaitLoops = 0;
+  while (!settingsReady && settingsWaitLoops++ < 100) { // ~5 seconds max
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
+  // If user wants auto-generation at boot, start SD scan in background (non-blocking)
+  if (settings.autoGenerateMedia) {
+    Serial.println("[BootCoord] autoGenerateMedia==true -> starting SD scan task now (background)");
+    sdScanCompleted = false;  // clear before starting
+    sdScanInProgress = true;
+
+    BaseType_t r = xTaskCreatePinnedToCore(sdScanTask, "SDScanBoot", 12 * 1024, NULL, 1, NULL, 1);
+    if (r == pdPASS) {
+      Serial.println("[BootCoord] sdScanTask spawned (non-blocking)");
+    } else {
+      Serial.println("[BootCoord] Failed to spawn sdScanTask; continuing without blocking");
+    }
+
+    // Fire off the incrementalScanTask to enqueue top-level buckets (non-blocking)
+    BaseType_t ir = xTaskCreatePinnedToCore(incrementalScanTask, "IncScanBoot", 12 * 1024, NULL, 1, NULL, 1);
+    if (ir == pdPASS) {
+      Serial.println("[BootCoord] incrementalScanTask started to enqueue top-level dirs");
+    } else {
+      Serial.println("[BootCoord] Failed to start incrementalScanTask");
+    }
+
+    // Allow index worker to proceed; set the request flag so the worker will perform initial sweep.
+    bootIndexAllowed = true;
+    requestIndexing = true;
+    Serial.println("[BootCoord] queued initial index request (non-blocking) and exiting BootCoord");
+  } else {
+    // autoGenerateMedia == false -> skip SD/index at boot, but allow index worker to run event-driven
+    Serial.println("[BootCoord] autoGenerateMedia==false -> skipping SD/index on boot");
+    bootIndexAllowed = true;
+  }
+
+  // We're done; BootCoord should not block — it exits so boot is free.
+  vTaskDelay(pdMS_TO_TICKS(100)); // tiny breathing room
+  Serial.println("[BootCoord] boot coordination done; exiting task");
+  vTaskDelete(NULL);
+}
+
+bool indexWorkerRunning(const char* bucket) {
+    // track active workers in a set/vector
+    static std::vector<String> running;
+    for (auto& b : running) {
+        if (b.equals(bucket)) return true;
+    }
+    running.push_back(bucket);
+    return false;
+}
+
+// --- Captive portal throttled logging ---
+// Keeps a small table of recent clients and when they were last logged
+// so we only print one message per device per INTERVAL_MS.
+#define CAPTIVE_MAX_CLIENT_LOGS 32
+
+struct CaptiveLogEntry {
+  String id;
+  unsigned long ts;
+};
+
+static CaptiveLogEntry captiveLogs[CAPTIVE_MAX_CLIENT_LOGS];
+static uint8_t captiveLogCount = 0;
+
+// ---------- human-readable byte formatting ----------
+String humanSize(size_t bytes) {
+  double b = (double)bytes;
+  const char *units[] = { "B", "KB", "MB", "GB", "TB" };
+  int u = 0;
+  while (b >= 1024.0 && u < 4) { b /= 1024.0; ++u; }
+  char buf[32];
+  // one decimal point for readability (e.g. 52.3MB)
+  snprintf(buf, sizeof(buf), "%.1f%s", b, units[u]);
+  return String(buf);
+}
+String mimeForPath(const String &path) {
+  String p = path;
+  p.toLowerCase();
+  if (p.endsWith(".html")) return "text/html";
+  if (p.endsWith(".css"))  return "text/css";
+  if (p.endsWith(".js"))   return "application/javascript";
+  if (p.endsWith(".mjs"))  return "text/javascript";      // <- important for ES modules
+  if (p.endsWith(".json")) return "application/json";
+  if (p.endsWith(".wasm")) return "application/wasm";
+  if (p.endsWith(".svg"))  return "image/svg+xml";
+  if (p.endsWith(".png"))  return "image/png";
+  if (p.endsWith(".jpg") || p.endsWith(".jpeg")) return "image/jpeg";
+  if (p.endsWith(".gif")) return "image/gif";
+  if (p.endsWith(".map")) return "application/octet-stream";
+  if (p.endsWith(".woff2")) return "font/woff2";
+  if (p.endsWith(".woff"))  return "font/woff";
+  if (p.endsWith(".ttf"))   return "font/ttf";
+  // fallback:
+  return "application/octet-stream";
+}
+
+// Helper: explicit mapping for file types we care about
+String getMimeType(const String &path) {
+  if (path.endsWith(".html")) return "text/html";
+  if (path.endsWith(".js"))   return "application/javascript";
+  if (path.endsWith(".mjs"))  return "application/javascript";
+  if (path.endsWith(".wasm")) return "application/wasm";   // CRITICAL for wasm
+  if (path.endsWith(".css"))  return "text/css";
+  if (path.endsWith(".json")) return "application/json";
+  if (path.endsWith(".map"))  return "application/json";
+  if (path.endsWith(".svg"))  return "image/svg+xml";
+  if (path.endsWith(".png"))  return "image/png";
+  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+  if (path.endsWith(".ico"))  return "image/x-icon";
+  return "application/octet-stream"; // fallback safe binary
+}
+void backgroundRegenerateTask(void *pv) {
+  Serial.println("[AdminRegen] backgroundRegenerateTask started");
+
+  // If an SD scan is not in progress, start one in background and wait for its initial pass.
+  if (!sdScanInProgress) {
+    sdScanCompleted = false;
+    BaseType_t r = xTaskCreatePinnedToCore(sdScanTask, "SDScanAdmin", 12 * 1024, NULL, 1, NULL, 1);
+    if (r == pdPASS) {
+      Serial.println("[AdminRegen] sdScanTask started by admin regenerate");
+      // Wait for initial pass (timeout to avoid hanging forever)
+      const uint32_t timeoutMs = 10 * 60 * 1000; // 10 minutes
+      uint32_t waited = 0;
+      const uint32_t step = 500;
+      while (!sdScanCompleted && waited < timeoutMs) {
+        vTaskDelay(pdMS_TO_TICKS(step));
+        waited += step;
+      }
+      if (sdScanCompleted) Serial.println("[AdminRegen] SD scan complete (admin)");
+      else Serial.println("[AdminRegen] SD scan timed out (admin) - proceeding to enqueue index");
+    } else {
+      Serial.println("[AdminRegen] Failed to spawn sdScanTask (admin) - proceeding");
+    }
+  } else {
+    // If an SD scan is already running, optionally wait a short while for it to finish
+    uint32_t waited = 0;
+    const uint32_t timeoutMs = 10 * 60 * 1000;
+    const uint32_t step = 500;
+    while (sdScanInProgress && waited < timeoutMs) {
+      vTaskDelay(pdMS_TO_TICKS(step));
+      waited += step;
+    }
+  }
+
+  // Enqueue top-level directories for indexing (same logic as immediateEnqueueTopLevelTask)
+  File root = SD_MMC.open("/");
+  if (root && root.isDirectory()) {
+    File entry;
+    while ((entry = root.openNextFile())) {
+      if (entry.isDirectory()) {
+        String path = String(entry.name()); // e.g. "/Music"
+        enqueueIndexUpdateForPath(path);
+        vTaskDelay(pdMS_TO_TICKS(1)); // tiny yield between enqueues
+      }
+      entry.close();
+    }
+    root.close();
+  } else {
+    if (root) root.close();
+    Serial.println("[AdminRegen] Could not open SD root to enqueue indexing (admin)");
+  }
+
+  // Inform index worker something changed
+  requestIndexing = true;
+
+  Serial.println("[AdminRegen] backgroundRegenerateTask: enqueue complete; exiting");
   vTaskDelete(NULL);
 }
 // ------------- Main Setup -------------------
@@ -1229,22 +2349,79 @@ void setup() {
     }
   
     Serial.println("SD Card initialized successfully!");
+
+    // --- create queue + SD mutex BEFORE starting index worker (single creation) ---
+    // queue holds pointers to IndexBuildArgs*
+    if (!indexQueue) {
+      indexQueue = xQueueCreate(16, sizeof(IndexBuildArgs*));
+      if (!indexQueue) {
+        Serial.println("[ERROR] indexQueue creation failed; enqueue will fallback to inline builds");
+      } else {
+        Serial.println("[IndexQueue] indexQueue created (16 entries)");
+      }
+    }
+
+    // create a mutex to serialize SD card access (protect heavy reads/writes)
+    if (!sdMutex) {
+      sdMutex = xSemaphoreCreateMutex();
+      if (!sdMutex) {
+        Serial.println("[WARN] sdMutex creation failed; concurrent SD I/O may be unsafe");
+      } else {
+        Serial.println("[Index] sdMutex created");
+      }
+    }
+
     Serial.println("Loading Settings...");
     loadSettings();
+    settingsReady = true; // signal background tasks the settings are loaded
     Serial.printf("[SETTINGS] autoGenerateMedia = %s\n", settings.autoGenerateMedia ? "true" : "false");
     applyWiFiSettings();
     applyRGBSettings();
     lv_label_set_text(ui_ssidlabel, settings.wifiSSID.c_str());
     Serial.print("settings.brightness = ");
     Serial.println(settings.brightness);
-    bool generateOnce = SD_MMC.exists("/generate_once.flag");
-    bool shouldGenerate = (settings.autoGenerateMedia || generateOnce);
+    // Check for legacy one-time flag on SD
+    bool generateOnce = false;
+    if (SD_MMC.begin()) {
+      generateOnce = SD_MMC.exists("/generate_once.flag");
+    } else {
+      Serial.println("[BOOT] Warning: SD_MMC.begin() failed when checking generate_once.flag");
+    }
 
     // Log state
     Serial.print("[BOOT] autoGenerateMedia (from settings) = ");
     Serial.println(settings.autoGenerateMedia ? "true" : "false");
     Serial.print("[BOOT] generate_once.flag = ");
     Serial.println(generateOnce ? "true" : "false");
+
+    // Decide whether to queue an index at boot.
+    // RULES:
+    //  - If settings.autoGenerateMedia == true -> queue index at boot.
+    //  - If settings.autoGenerateMedia == false -> do NOT queue an index at boot (use existing NDJSON).
+    //  - If a legacy generate_once.flag exists, optionally honor it even when autoGenerateMedia==false.
+    //    The code below does honor the legacy flag: it queues one index and removes the flag if present.
+    //
+    // We do NOT start any new Indexer task here. Instead we set requestIndexing and the existing
+    // IndexWorker (already created above) will consume it and run the index in its normal flow.
+    if (settings.autoGenerateMedia) {
+      requestIndexing = true;
+      Serial.println("[BOOT] autoGenerateMedia ON -> queued index for IndexWorker via requestIndexing flag");
+
+      // clear legacy flag if present (we already queued)
+      if (generateOnce && SD_MMC.exists("/generate_once.flag")) {
+        SD_MMC.remove("/generate_once.flag");
+        Serial.println("[BOOT] Removed legacy /generate_once.flag (auto-generate handled)");
+      }
+    } else {
+      Serial.println("[BOOT] autoGenerateMedia OFF -> skipping automated index on boot (using existing NDJSON)");
+
+      // Honor one-time legacy flag as a one-off override 
+      if (generateOnce) {
+        requestIndexing = true;
+        SD_MMC.remove("/generate_once.flag");
+        Serial.println("[BOOT] Found legacy /generate_once.flag -> queued ONE-TIME index and removed flag");
+      }
+    }
 
     // Remove /boot_done.flag if cold boot or one-time requested
     esp_reset_reason_t resetReason = esp_reset_reason();
@@ -1253,7 +2430,7 @@ void setup() {
     }
 
     // Generate if needed
-    if (shouldGenerate && !SD_MMC.exists("/boot_done.flag")) {
+    if ((settings.autoGenerateMedia || generateOnce) && !SD_MMC.exists("/boot_done.flag")) {
         Serial.println("[BOOT] Media generation required. Generating media.json...");
         generateMediaJSON();
 
@@ -1272,21 +2449,60 @@ void setup() {
         Serial.println("[BOOT] Skipping media.json generation.");
     }
 
-Set_Backlight(settings.brightness);  // now using loaded value
-    updateSDBAR();
-    xTaskCreatePinnedToCore(
-      sdScanTask,        // function
-      "SDScan",          // name
-      8 * 1024,          // stack size
-      NULL,              // params
-      1,                 // priority (1 = low)
-      NULL,              // handle (not needed)
-      0                  // run on core 0
-    );
+    // Now restore last-known SD usage quickly so UI has a valid starting point
+    bool haveSdSnapshot = false;
+    if (SD_MMC.begin()) {
+      haveSdSnapshot = loadSdUsageFromFile();
+      if (!haveSdSnapshot) {
+        Serial.println("[SDBAR] No prior usage snapshot found; SDBAR will update after background scan.");
+      } else {
+        Serial.println("[SDBAR] Restored SD usage snapshot from disk; will skip heavy boot scan if configured.");
+      }
+    } else {
+      Serial.println("[SDBAR] SD_MMC.begin() failed when trying to load usage snapshot");
+    }
+
+    Set_Backlight(settings.brightness);  // now using loaded value
+    updateSDBAR(); // will show cached values loaded above (if any)
+
+    // Start the storage monitor (unchanged)
+    xTaskCreatePinnedToCore(storageMonitorTask, "StorageMonitor", 4096, NULL, 1, NULL, 0);
+
+    // Start boot coordinator which will start sdScanTask and incrementalScanTask in background (after a short delay).
+    // This prevents heavy work from blocking setup() / webserver startup.
+    BaseType_t cr = xTaskCreatePinnedToCore(bootCoordinatorTask, "BootCoord", 8 * 1024, NULL, 1, NULL, 1);
+    if (cr == pdPASS) {
+      Serial.println("[Setup] bootCoordinatorTask started (will start background SD/index after boot)");
+    } else {
+      Serial.println("[Setup] Failed to start bootCoordinatorTask - falling back to direct starts");
+
+      // Fallback: attempt to preserve previous behavior if coordinator can't start.
+      static bool sdScanStarted = false;
+      if (!sdScanStarted) {
+        if (settings.autoGenerateMedia || !haveSdSnapshot) {
+          BaseType_t r = xTaskCreatePinnedToCore(sdScanTask, "SDScan", 12 * 1024, NULL, 1, NULL, 1);
+          if (r == pdPASS) {
+            sdScanStarted = true;
+            Serial.println("[SDBAR] background SD scan task started (fallback)");
+          } else {
+            Serial.println("[SDBAR] Failed to start SD scan task (fallback)");
+          }
+        } else {
+          Serial.println("[SDBAR] Skipping boot SD scan because autoGenerateMedia == false and snapshot exists (fallback)");
+        }
+      }
+
+      if (settings.autoGenerateMedia || requestIndexing) {
+        xTaskCreatePinnedToCore(incrementalScanTask, "IncrementalScan", 12 * 1024, NULL, 1, NULL, 0);
+      } else {
+        Serial.println("[Index] Skipping boot incremental index enqueue (autoGenerateMedia == false) (fallback)");
+      }
+    }
+
+    // Continue registering handlers (unchanged)
     createSimpleUploadHandler("Movies", "/upload-movie");
     createSimpleUploadHandler("Music", "/upload-music");
     createSimpleUploadHandler("Books", "/upload-book");
- 
 
     delay(2000);
 
@@ -1302,10 +2518,6 @@ Set_Backlight(settings.brightness);  // now using loaded value
     //.m3u playlist endpoint
     server.on("/playlist.m3u", HTTP_GET, [](AsyncWebServerRequest *request){
         String playlist = "#EXTM3U\n";
-    server.on("/nomad.m3u", HTTP_GET, [](AsyncWebServerRequest *request) {
-        // internally call the same code or just redirect
-        request->redirect("/playlist.m3u");
-    });
 
         // === MOVIES ===
         playlist += "# === MOVIES ===\n";
@@ -1315,10 +2527,11 @@ Set_Backlight(settings.brightness);  // now using loaded value
             while (file) {
                 String name = file.name();
                 if (!file.isDirectory() && (name.endsWith(".mp4") || name.endsWith(".mkv"))) {
-                    String fullPath = String("/Movies/") + file.name();
-                    playlist += "#EXTINF:-1," + String(file.name()) + "\n";
+                    String fullPath = String("/Movies/") + name;
+                    playlist += "#EXTINF:-1," + name + "\n";
                     playlist += "http://" + WiFi.softAPIP().toString() + "/media?file=" + urlencode(fullPath) + "\n";
                 }
+                file.close();
                 file = movieDir.openNextFile();
             }
         }
@@ -1330,7 +2543,10 @@ Set_Backlight(settings.brightness);  // now using loaded value
             File showFolder = showsRoot.openNextFile();
             while (showFolder) {
                 if (showFolder.isDirectory()) {
-                    String showFolderName = String(showFolder.name());  // e.g. "GravityFalls"
+                    // showFolder.name() returns full path on some SD libs; normalize just in case
+                    String showFolderName = String(showFolder.name());
+                    // If name includes leading '/', remove to build path cleanly
+                    if (showFolderName.startsWith("/")) showFolderName = showFolderName.substring(1);
                     String fullShowPath = "/Shows/" + showFolderName;
 
                     File episodeDir = SD_MMC.open(fullShowPath);
@@ -1343,66 +2559,16 @@ Set_Backlight(settings.brightness);  // now using loaded value
                                 playlist += "#EXTINF:-1," + epName + "\n";
                                 playlist += "http://" + WiFi.softAPIP().toString() + "/media?file=" + urlencode(fullPath) + "\n";
                             }
+                            ep.close();
                             ep = episodeDir.openNextFile();
                         }
                     }
+                    if (episodeDir) episodeDir.close();
                 }
+                showFolder.close();
                 showFolder = showsRoot.openNextFile();
             }
         }
-
-    //.m3u playlist endpoint
-    server.on("/playlist.m3u", HTTP_GET, [](AsyncWebServerRequest *request){
-        String playlist = "#EXTM3U\n";
-    server.on("/nomad.m3u", HTTP_GET, [](AsyncWebServerRequest *request) {
-        // internally call the same code or just redirect
-        request->redirect("/playlist.m3u");
-    });
-
-        // === MOVIES ===
-        playlist += "# === MOVIES ===\n";
-        File movieDir = SD_MMC.open("/Movies");
-        if (movieDir && movieDir.isDirectory()) {
-            File file = movieDir.openNextFile();
-            while (file) {
-                String name = file.name();
-                if (!file.isDirectory() && (name.endsWith(".mp4") || name.endsWith(".mkv"))) {
-                    String fullPath = String("/Movies/") + file.name();
-                    playlist += "#EXTINF:-1," + String(file.name()) + "\n";
-                    playlist += "http://" + WiFi.softAPIP().toString() + "/media?file=" + urlencode(fullPath) + "\n";
-                }
-                file = movieDir.openNextFile();
-            }
-        }
-
-        // === SHOWS ===
-        playlist += "# === SHOWS ===\n";
-        File showsRoot = SD_MMC.open("/Shows");
-        if (showsRoot && showsRoot.isDirectory()) {
-            File showFolder = showsRoot.openNextFile();
-            while (showFolder) {
-                if (showFolder.isDirectory()) {
-                    String showFolderName = String(showFolder.name());  // e.g. "GravityFalls"
-                    String fullShowPath = "/Shows/" + showFolderName;
-
-                    File episodeDir = SD_MMC.open(fullShowPath);
-                    if (episodeDir && episodeDir.isDirectory()) {
-                        File ep = episodeDir.openNextFile();
-                        while (ep) {
-                            String epName = ep.name();
-                            if (!ep.isDirectory() && (epName.endsWith(".mp4") || epName.endsWith(".mkv"))) {
-                                String fullPath = fullShowPath + "/" + epName;
-                                playlist += "#EXTINF:-1," + epName + "\n";
-                                playlist += "http://" + WiFi.softAPIP().toString() + "/media?file=" + urlencode(fullPath) + "\n";
-                            }
-                            ep = episodeDir.openNextFile();
-                        }
-                    }
-                }
-                showFolder = showsRoot.openNextFile();
-            }
-        }
-
 
         // === MUSIC ===
         playlist += "# === MUSIC ===\n";
@@ -1412,15 +2578,22 @@ Set_Backlight(settings.brightness);  // now using loaded value
             while (file) {
                 String name = file.name();
                 if (!file.isDirectory() && name.endsWith(".mp3")) {
-                    String fullPath = String("/Music/") + file.name();
-                    playlist += "#EXTINF:-1," + String(file.name()) + "\n";
+                    String fullPath = String("/Music/") + name;
+                    playlist += "#EXTINF:-1," + name + "\n";
                     playlist += "http://" + WiFi.softAPIP().toString() + "/media?file=" + urlencode(fullPath) + "\n";
                 }
+                file.close();
                 file = musicDir.openNextFile();
             }
         }
 
+        // Send playlist back
         request->send(200, "audio/x-mpegurl", playlist);
+    });
+
+    // nomad.m3u redirects to canonical playlist
+    server.on("/nomad.m3u", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->redirect("/playlist.m3u");
     });
 
     //fAKE dlna dISCOVERY
@@ -1485,89 +2658,6 @@ Set_Backlight(settings.brightness);  // now using loaded value
         response->addHeader("Location", "/dlna/desc.xml");  // HTTP redirect target
         request->send(response);
     });
-
-        // === MUSIC ===
-        playlist += "# === MUSIC ===\n";
-        File musicDir = SD_MMC.open("/Music");
-        if (musicDir && musicDir.isDirectory()) {
-            File file = musicDir.openNextFile();
-            while (file) {
-                String name = file.name();
-                if (!file.isDirectory() && name.endsWith(".mp3")) {
-                    String fullPath = String("/Music/") + file.name();
-                    playlist += "#EXTINF:-1," + String(file.name()) + "\n";
-                    playlist += "http://" + WiFi.softAPIP().toString() + "/media?file=" + urlencode(fullPath) + "\n";
-                }
-                file = musicDir.openNextFile();
-            }
-        }
-
-        request->send(200, "audio/x-mpegurl", playlist);
-    });
-
-    //fAKE dlna dISCOVERY
-    server.on("/dlna/device.xml", HTTP_GET, [](AsyncWebServerRequest *request){
-      request->send(200, "text/xml", R"rawliteral(
-        <?xml version="1.0"?>
-        <root xmlns="urn:schemas-upnp-org:device-1-0">
-          <specVersion>
-            <major>1</major>
-            <minor>0</minor>
-          </specVersion>
-          <device>
-            <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
-            <friendlyName>Nomad Media Server</friendlyName>
-            <manufacturer>Jcorp</manufacturer>
-            <modelName>Nomad DLNA</modelName>
-            <UDN>uuid:ESP32-DLNA-NOMAD</UDN>
-          </device>
-        </root>
-      )rawliteral");
-    });
-    server.on("/ssdp/device-desc.xml", HTTP_GET, [](AsyncWebServerRequest *request){
-      request->send(200, "text/xml", R"rawliteral(
-        <?xml version="1.0"?>
-        <root xmlns="urn:schemas-upnp-org:device-1-0">
-          <specVersion>
-            <major>1</major>
-            <minor>0</minor>
-          </specVersion>
-          <device>
-            <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
-            <friendlyName>Nomad Media Server</friendlyName>
-            <manufacturer>Jcorp</manufacturer>
-            <modelName>Nomad</modelName>
-            <modelNumber>1</modelNumber>
-            <UDN>uuid:ESP32-DLNA-FAKE-1234</UDN>
-          </device>
-        </root>
-      )rawliteral");
-    });
-    server.on("/dlna/description.xml", HTTP_GET, [](AsyncWebServerRequest *request){
-      request->send(200, "text/xml", R"rawliteral(
-        <?xml version="1.0"?>
-        <root xmlns="urn:schemas-upnp-org:device-1-0">
-          <specVersion>
-            <major>1</major>
-            <minor>0</minor>
-          </specVersion>
-          <device>
-            <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
-            <friendlyName>Nomad Media</friendlyName>
-            <manufacturer>Jcorp</manufacturer>
-            <modelName>ESP32-Nomad</modelName>
-            <UDN>uuid:nomad-dlna-esp32</UDN>
-          </device>
-        </root>
-      )rawliteral");
-    });
-    server.on("/description.xml", HTTP_GET, [](AsyncWebServerRequest *request){
-        AsyncWebServerResponse *response = request->beginResponse(302, "text/plain", "");
-        response->addHeader("Application-URL", "http://" + WiFi.softAPIP().toString() + "/dlna/");
-        response->addHeader("Location", "/dlna/desc.xml");  // HTTP redirect target
-        request->send(response);
-    });
-
     
     // Set LED mode: solid (0), rainbow (1), etc.
     server.on("/led/onoff", HTTP_POST, [](AsyncWebServerRequest *request){},
@@ -1622,64 +2712,261 @@ Set_Backlight(settings.brightness);  // now using loaded value
 
     server.on("/sdinfo", HTTP_GET, handleSDInfo);
     server.on("/generate-media", HTTP_POST, [](AsyncWebServerRequest *request) {
-        Serial.println("[ADMIN] /generate-media called");
+      Serial.println("[ADMIN] /generate-media requested by UI");
 
-        if (!SD_MMC.begin()) {
-            request->send(500, "text/plain", "SD card not available.");
-            Serial.println("[ADMIN] SD card not mounted.");
-            return;
-        }
+      if (!SD_MMC.begin()) {
+        request->send(500, "text/plain", "SD card not available.");
+        Serial.println("[ADMIN] SD card not mounted.");
+        return;
+      }
 
-        bool generateOnceFlagExists = SD_MMC.exists("/generate_once.flag");
+      // If already running, reject
+      if (indexingInProgress) {
+        request->send(409, "text/plain", "Index already in progress");
+        Serial.println("[ADMIN] Index request ignored: indexingInProgress == true");
+        return;
+      }
 
-        if (settings.autoGenerateMedia) {
-            if (!generateOnceFlagExists) {
-                // Always-generate mode: allow one extra reboot-based generation
-                File f = SD_MMC.open("/generate_once.flag", FILE_WRITE);
-                if (f) {
-                    f.print("1");
-                    f.close();
-                    Serial.println("[ADMIN] Created /generate_once.flag (settings.autoGenerateMedia ON)");
-                } else {
-                    Serial.println("[ADMIN] Failed to create /generate_once.flag");
-                }
-            } else {
-                Serial.println("[ADMIN] One-time flag already exists. No action taken.");
-            }
+      // If a request is already queued, tell caller
+      if (requestIndexing) {
+        request->send(202, "text/plain", "Index request already queued");
+        Serial.println("[ADMIN] Duplicate index request ignored (already queued).");
+        return;
+      }
+
+      // Queue indexing for the existing background scan task to pick up.
+      requestIndexing = true;
+
+      // If autoGenerateMedia is disabled we still want a responsive "Regenerate" button.
+      // Spawn a short-lived task to enqueue top-level directories for the index worker to process.
+      // Otherwise, if autoGenerateMedia is enabled we rely on the existing boot/enqueue behavior.
+      if (!settings.autoGenerateMedia) {
+        BaseType_t tr = xTaskCreatePinnedToCore(immediateEnqueueTopLevelTask, "ImmediateEnq", 6 * 1024, NULL, 1, NULL, 1);
+        if (tr == pdPASS) {
+          Serial.println("[ADMIN] immediateEnqueueTopLevelTask started (autoGenerateMedia == false)");
         } else {
-            // Auto-generation disabled: allow one-time override
-            File f = SD_MMC.open("/generate_once.flag", FILE_WRITE);
-            if (f) {
-                f.print("1");
-                f.close();
-                Serial.println("[ADMIN] Created /generate_once.flag (settings.autoGenerateMedia OFF)");
-            } else {
-                Serial.println("[ADMIN] Failed to create /generate_once.flag");
-            }
+          Serial.println("[ADMIN] Failed to start immediateEnqueueTopLevelTask");
         }
+      }
 
-        request->send(200, "text/plain", "Flag set. Rebooting to generate media...");
-        delay(200);  // Let SD write settle
-        ESP.restart();
+      // Remove legacy one-time flag
+      if (SD_MMC.exists("/generate_once.flag")) {
+        SD_MMC.remove("/generate_once.flag");
+        Serial.println("[ADMIN] Removed legacy /generate_once.flag (UI queued index)");
+      }
+
+      request->send(200, "text/plain", "Indexing queued; background task will run it.");
+      Serial.println("[ADMIN] Index queued for existing background task.");
+    });
+
+    // ---------------- static + Archive handlers ----------------
+
+    server.on("/assets/kiwix/www/js/libzim-wasm.wasm", HTTP_GET, [](AsyncWebServerRequest *request) {
+      const char* p = "/assets/kiwix/www/js/libzim-wasm.wasm";
+      Serial.printf("[WASM HANDLER] request for %s\n", p);
+
+      // sanity: does file exist on the SD root?
+      if (!SD_MMC.exists(p)) {
+        Serial.printf("[WASM HANDLER] not found %s\n", p);
+        request->send(404, "text/plain", "WASM not found");
+        return;
+      }
+
+      // Serve exact file with correct content type and CORS + Accept-Ranges header
+      AsyncWebServerResponse *response = request->beginResponse(SD_MMC, p, "application/wasm");
+      response->addHeader("Access-Control-Allow-Origin", "*");
+      response->addHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      response->addHeader("Access-Control-Allow-Headers", "Range, Content-Type, Accept");
+      // Kiwix/libzim expects Accept-Ranges to be present; advertise bytes support (even if not fully partial-served).
+      response->addHeader("Accept-Ranges", "bytes");
+      // short client cache so we can update the lib if needed
+      response->addHeader("Cache-Control", "public, max-age=600");
+      request->send(response);
+    });
+
+    // Generic .wasm fallback (in case different filename used)
+    server.on("^\\/assets\\/.*\\.wasm$", HTTP_GET, [](AsyncWebServerRequest *request) {
+      String url = request->url(); // e.g. /assets/kiwix/www/js/libzim-wasm.wasm
+      Serial.printf("[WASM REGEX] request URL: %s\n", url.c_str());
+      String p = url; // use same path for SD lookup
+
+      if (!SD_MMC.exists(p.c_str())) {
+        Serial.printf("[WASM REGEX] not found %s\n", p.c_str());
+        request->send(404, "text/plain", "WASM not found");
+        return;
+      }
+
+      AsyncWebServerResponse *response = request->beginResponse(SD_MMC, p.c_str(), "application/wasm");
+      response->addHeader("Access-Control-Allow-Origin", "*");
+      response->addHeader("Accept-Ranges", "bytes");  
+      request->send(response);
+    });
+
+    // Make sure OPTIONS preflight for asset routes will not block
+    server.on("^\\/assets\\/.*$", HTTP_OPTIONS, [](AsyncWebServerRequest *request){
+      AsyncWebServerResponse *resp = request->beginResponse(200, "text/plain", "");
+      resp->addHeader("Access-Control-Allow-Origin", "*");
+      resp->addHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      resp->addHeader("Access-Control-Allow-Headers", "Range, Content-Type, Accept");
+      request->send(resp);
+    });
+
+    // Explicitly route Archive requests to your range handler so Range checks will hit it.
+    // Replace `handleRangeRequest` below with the name of your existing range-serving function.
+    server.on("^\\/Archive\\/.*$", HTTP_GET, [](AsyncWebServerRequest *request){
+      Serial.printf("[ARCHIVE ROUTE] delegating to handleRangeRequest for %s\n", request->url().c_str());
+      // If your function signature is: void handleRangeRequest(AsyncWebServerRequest *request)
+      // this will call it directly:
+      handleRangeRequest(request);
+    });
+
+    // Also expose a tiny debug endpoint to check SD file existence (helps diagnose path mismatch)
+    server.on("/debug/sdexists", HTTP_GET, [](AsyncWebServerRequest *request){
+      if (!request->hasParam("path")) {
+        request->send(400, "text/plain", "supply ?path=/assets/.. or /Archive/..");
+        return;
+      }
+      String p = request->getParam("path")->value();
+      bool exist = SD_MMC.exists(p.c_str());
+      String out = String("{\"path\":\"") + p + String("\",\"exists\":") + (exist ? "true" : "false") + "}";
+      request->send(200, "application/json", out);
     });
 
 
+    // optional: small debug route to verify presence of specific files
+    server.on("/assets/check", HTTP_GET, [](AsyncWebServerRequest *request){
+      // query param ?file=/assets/... 
+      if (request->hasParam("file")) {
+        String p = request->getParam("file")->value();
+        bool ok = SD_MMC.exists(p);
+        String res = String("{\"file\":") + "\"" + p + "\"" + ",\"exists\":" + (ok?"true":"false") + "}";
+        request->send(200, "application/json", res);
+      } else {
+        request->send(400, "text/plain", "use ?file=/assets/..");
+      }
+    });
+    // Serve the glue JS with proper MIME
+    server.on("/assets/kiwix/www/js/libzim-wasm.js", HTTP_GET, [](AsyncWebServerRequest *request){
+      const char* p = "/assets/kiwix/www/js/libzim-wasm.js";
+      if (!SD_MMC.exists(p)) { request->send(404, "text/plain", "not found"); return; }
+      AsyncWebServerResponse* r = request->beginResponse(SD_MMC, p, "application/javascript");
+      r->addHeader("Access-Control-Allow-Origin","*");
+      request->send(r);
+    });
 
-    // Captive Portal: Redirect all unknown requests
+    // Explicit JSON list endpoint for ZIMs
+    server.on("/zim-list", HTTP_GET, [](AsyncWebServerRequest *request){
+      handleZimList(request);
+    });
+
+    server.on("/Archive", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String url = request->url();
+        if (url.endsWith(".zim")) {
+            Serial.printf("[ZIM HANDLER] handling Range for %s\n", url.c_str());
+            handleRangeRequest(request);
+        } else {
+            request->send(404, "text/plain", "Not a ZIM file");
+        }
+    });
+   // ---------- Serve /assets/* with correct MIME types & headers ----------
+    server.on("/assets/*", HTTP_GET, [](AsyncWebServerRequest *request){
+      String url = request->url(); // e.g. "/assets/foliate/vendor/pdf.mjs"
+      if (url.length() == 0) { request->send(400); return; }
+
+      // The SD path on your build uses the same url strings (e.g. "/assets/....")
+      const String sdPath = url;
+
+      if (!SD_MMC.exists(sdPath.c_str())) {
+        Serial.printf("[ASSETS] not found: %s\n", sdPath.c_str());
+        request->send(404, "text/plain", "not found");
+        return;
+      }
+
+      String mime = mimeForPath(sdPath); // call the top-level helper
+      AsyncWebServerResponse *resp = request->beginResponse(SD_MMC, sdPath.c_str(), mime.c_str());
+
+      // Helpful headers for libraries (PDF.js, wasm, fonts, etc.)
+      resp->addHeader("Access-Control-Allow-Origin", "*");
+      resp->addHeader("Accept-Ranges", "bytes");
+      resp->addHeader("Cache-Control", "public, max-age=600");
+      request->send(resp);
+    });
+
+    // CORS preflight for /assets/*
+    server.on("/assets/*", HTTP_OPTIONS, [](AsyncWebServerRequest *request){
+      AsyncWebServerResponse* r = request->beginResponse(204);
+      r->addHeader("Access-Control-Allow-Origin", "*");
+      r->addHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+      r->addHeader("Access-Control-Allow-Headers", "Range, Content-Type");
+      r->addHeader("Access-Control-Max-Age", "1728000");
+      request->send(r);
+    });
+    // Captive Portal + delegated handlers: Redirect unknown requests but handle Archive & wasm first
     server.onNotFound([](AsyncWebServerRequest *request) {
-        if (request->hasHeader("User-Agent")) {
-            String userAgent = request->header("User-Agent");
-            Serial.println("User-Agent: " + userAgent);
+      const unsigned long LOG_INTERVAL_MS = 10000UL; // one log per client per 10s
 
-            if (userAgent.indexOf("iPhone") >= 0 || userAgent.indexOf("iPad") >= 0 || userAgent.indexOf("Macintosh") >= 0) {
-                Serial.println("Apple device detected. Serving appleindex.html");
-                request->send(SD_MMC, "/appleindex.html", "text/html");
-                return;
-            }
+      // First, check for paths we must serve specially (Archive range serving & wasm)
+      String url = request->url();
+      // If this is an Archive path, delegate to handleRangeRequest (will handle HEAD/GET/Range)
+      if (url.startsWith("/Archive/")) {
+        Serial.printf("[onNotFound] Delegating Archive request to handleRangeRequest for: %s\n", url.c_str());
+        handleRangeRequest(request);
+        return;
+      }
+
+      // If this is the Kiwix wasm asset path, serve with correct MIME + CORS + Accept-Ranges
+      if (url.startsWith("/assets/kiwix/")) {
+        Serial.printf("[onNotFound] asset request: %s\n", url.c_str());
+
+        // If the file exists on SD_MMC, serve it with the appropriate MIME and CORS
+        if (SD_MMC.exists(url.c_str())) {
+          String mime = "text/plain";
+          if (url.endsWith(".js"))   mime = "application/javascript";
+          else if (url.endsWith(".mjs")) mime = "application/javascript";
+          else if (url.endsWith(".css"))  mime = "text/css";
+          else if (url.endsWith(".html")) mime = "text/html";
+          else if (url.endsWith(".json")) mime = "application/json";
+          else if (url.endsWith(".wasm")) mime = "application/wasm";
+          else if (url.endsWith(".svg"))  mime = "image/svg+xml";
+          else if (url.endsWith(".png"))  mime = "image/png";
+          else if (url.endsWith(".jpg") || url.endsWith(".jpeg")) mime = "image/jpeg";
+          // add types you need
+
+          AsyncWebServerResponse *resp = request->beginResponse(SD_MMC, url.c_str(), mime.c_str());
+          // Tell browser this can use Range requests (important for some libs)
+          resp->addHeader("Accept-Ranges", "bytes");
+          // Allow cross-origin fetch (Kiwix may use blobs / iframe techniques)
+          resp->addHeader("Access-Control-Allow-Origin", "*");
+          resp->addHeader("Cache-Control", "max-age=600");
+          request->send(resp);
+          return;
+        } else {
+          Serial.printf("[onNotFound] asset NOT found: %s\n", url.c_str());
+          // fall through: return 404 instead of index.html so it's obvious
+          request->send(404, "text/plain", "not found");
+          return;
         }
-        Serial.println("Android device. Serving index.html");
-        request->send(SD_MMC, "/index.html", "text/html");
+      }
+
+      String userAgent = "";
+      if (request->hasHeader("User-Agent")) userAgent = request->header("User-Agent");
+      String clientKey = userAgent.length() ? userAgent : String("NO_UA");
+
+      // Always log the UA (you said you don't mind spam) - no gating that can abort requests
+      if (userAgent.length()) {
+        Serial.println("[User-Agent] " + userAgent);
+
+        if (userAgent.indexOf("iPhone") >= 0 || userAgent.indexOf("iPad") >= 0 || userAgent.indexOf("Macintosh") >= 0) {
+          Serial.println("Apple device detected. Serving appleindex.html");
+          request->send(SD_MMC, "/appleindex.html", "text/html");
+          return;
+        }
+      }
+
+      Serial.println("Android/device default. Serving index.html");
+      request->send(SD_MMC, "/index.html", "text/html");
     });
+
     // Captive triggers for Apple & Android devices
     server.on("/hotspot-detect.html", HTTP_GET, [](AsyncWebServerRequest *request) {
         Serial.println("Apple captive portal request detected, serving appleindex.html");
@@ -1710,31 +2997,37 @@ Set_Backlight(settings.brightness);  // now using loaded value
     });
 
     server.on("/dlna/contentdir.xml", HTTP_GET, [](AsyncWebServerRequest *request){
-      String xml = "<?xml version=\"1.0\"?><ContentDirectory>";
+      AsyncResponseStream *stream = request->beginResponseStream("text/xml");
+      stream->print("<?xml version=\"1.0\"?><ContentDirectory>");
       File root = SD_MMC.open("/Movies");
       if (root && root.isDirectory()) {
         File file = root.openNextFile();
         while (file) {
           if (!file.isDirectory()) {
-            String name = file.name();
-            xml += "<item>";
-            xml += "<title>" + name + "</title>";
-            xml += "<res protocolInfo=\"http-get:*:video/mp4:*\">";
-            xml += "http://192.168.4.1/Movies/" + name + "</res>";
-            xml += "</item>";
+            // escape simple XML-critical characters (very small cost)
+            String name = String(file.name());
+            stream->print("<item><title>");
+            stream->print(name);
+            stream->print("</title><res protocolInfo=\"http-get:*:video/mp4:*\">");
+            // URL encode minimal chars — safer to include raw name only if it contains no spaces
+            stream->print("http://192.168.4.1/Movies/");
+            stream->print(name);
+            stream->print("</res></item>");
           }
+          file.close();
           file = root.openNextFile();
+          yield(); // keep watchdog happy
         }
       }
-      xml += "</ContentDirectory>";
-      request->send(200, "text/xml", xml);
+      stream->print("</ContentDirectory>");
+      request->send(stream);
     });
     server.on("/listfiles", HTTP_GET, handleListFiles);
-    server.serveStatic("/assets", SD_MMC, "/assets");
-    server.serveStatic("/assets/", SD_MMC, "/assets/");
+    server.on("/zim", HTTP_GET, handleRangeRequest);  // alias to existing range handler: /zim?file=/Archive/name.zim
     // Static HTML routes
     server.serveStatic("/movies.html", SD_MMC, "/movies.html");
     server.serveStatic("/music.html", SD_MMC, "/music.html");
+    server.serveStatic("/playlist.html", SD_MMC, "/playlist.html");
     server.serveStatic("/books.html", SD_MMC, "/books.html");
     server.serveStatic("/shows.html", SD_MMC, "/shows.html");
     server.serveStatic("/admin.html", SD_MMC, "/admin.html");
@@ -1743,6 +3036,7 @@ Set_Backlight(settings.brightness);  // now using loaded value
     server.serveStatic("/menu.html", SD_MMC, "/menu.html");
     server.serveStatic("/movies", SD_MMC, "/movies.html");
     server.serveStatic("/music",  SD_MMC, "/music.html");
+    server.serveStatic("/playlist",  SD_MMC, "/playlist.html");
     server.serveStatic("/books",  SD_MMC, "/books.html");
     server.serveStatic("/shows",  SD_MMC, "/shows.html");
     server.serveStatic("/admin",  SD_MMC, "/admin.html");
@@ -1751,6 +3045,43 @@ Set_Backlight(settings.brightness);  // now using loaded value
     server.serveStatic("/menu",   SD_MMC, "/menu.html");
     server.serveStatic("/gallery",   SD_MMC, "/gallery.html");
     server.serveStatic("/files",   SD_MMC, "/files.html");
+    server.serveStatic("/filebrowser",   SD_MMC, "/filebrowser.html");
+    server.on("^/assets/.*", HTTP_GET, [](AsyncWebServerRequest *request) {
+        String url = request->url();            // e.g. /assets/javascript-libzim-main/tests/prototype/libzim-wasm.wasm
+        // Strip query string if present
+        int qi = url.indexOf('?');
+        if (qi > 0) url = url.substring(0, qi);
+
+        // Work with SD_MMC FS path (assuming your assets folder is at root /assets on SD_MMC)
+        String fsPath = url; // e.g. "/assets/..."
+        // If your SD folder layout differs, adjust fsPath here (for example: "/www" + url)
+
+        // File not found
+        if (!SD_MMC.exists(fsPath)) {
+            request->send(404, "text/plain", "Not found");
+            return;
+        }
+
+        // Choose MIME type (important: .wasm -> application/wasm)
+        String mime = getMimeType(fsPath);
+
+        // If the client asked for ranges OR file is large/binary (wasm, zim...), use your handleRangeRequest
+        // (Assumes handleRangeRequest(AsyncWebServerRequest *request) is defined earlier in your INO)
+        if (request->hasHeader("Range") || fsPath.endsWith(".wasm") || fsPath.endsWith(".zim")) {
+            // handleRangeRequest should read request->url() or the path and serve bytes properly.
+            handleRangeRequest(request);
+            return;
+        }
+
+        // Normal full response for small/static files
+        AsyncWebServerResponse *response = request->beginResponse(SD_MMC, fsPath, mime);
+        // Ensure browser/wasm loader can request ranges later if needed
+        response->addHeader("Accept-Ranges", "bytes");
+        // Optional caching header for static assets (tweak as needed)
+        response->addHeader("Cache-Control", "public, max-age=600");
+        request->send(response);
+
+    }, nullptr); // no body parser
     // Serve root directory and default to index.html
     server.serveStatic("/", SD_MMC, "/").setDefaultFile("index.html");
     server.serveStatic("/Gallery", SD_MMC, "/Gallery")
@@ -1836,18 +3167,30 @@ server.on("/list-assets", HTTP_GET, [](AsyncWebServerRequest *request){
     return;
   }
 
-  String output = "{\"files\":[";
+  AsyncResponseStream *stream = request->beginResponseStream("application/json");
+  stream->print("{\"files\":[");
   bool first = true;
-  File f;
-  while ((f = d.openNextFile())) {
-    if (!first) output += ",";
-    output += "\"" + String(f.name()).substring(String(dir).length()) + "\"";
+  File f = d.openNextFile();
+  while (f) {
+    if (!first) stream->print(',');
+    String name = String(f.name());
+    // strip leading dir prefix if present
+    if (name.startsWith(dir)) {
+      name = name.substring(dir.length());
+    }
+    // minimal escaping for JSON strings (if needed)
+    stream->print('\"');
+    stream->print(name);
+    stream->print('\"');
     first = false;
     f.close();
+    f = d.openNextFile();
+    yield();
   }
-  output += "]}";
-  request->send(200, "application/json", output);
+  stream->print("]}");
+  request->send(stream);
 });
+
 
 server.on("/mkdir", HTTP_POST, [](AsyncWebServerRequest *request) {
     // Require POST parameter "dirname"
@@ -1889,47 +3232,72 @@ server.on("/mkdir", HTTP_POST, [](AsyncWebServerRequest *request) {
     }
 });
 
+server.on("/assets/javascript-libzim-main/tests/prototype/libzim-wasm.wasm", HTTP_GET, [](AsyncWebServerRequest *request){
+  const String path = "/assets/javascript-libzim-main/tests/prototype/libzim-wasm.wasm"; // exact SD path
+  Serial.printf("[ASSET] Request for WASM: %s\n", path.c_str());
 
-static std::map<AsyncWebServerRequest*, String> uploadPaths;
+  // Simple existence check to prevent returning a fallback HTML page
+  if (!SD_MMC.exists(path)) {
+    Serial.printf("[ASSET] WASM not found on SD: %s\n", path.c_str());
+    request->send(404, "text/plain", "Not found");
+    return;
+  }
+
+  // Serve from SD_MMC with correct MIME and Accept-Ranges
+  AsyncWebServerResponse *response = request->beginResponse(SD_MMC, path, "application/wasm");
+  response->addHeader("Accept-Ranges", "bytes");
+  request->send(response);
+});
+
+
+//static std::map<AsyncWebServerRequest*, String> uploadPaths;
 server.on("/media", HTTP_GET, handleRangeRequest); // THE MOST IMPORTANT ONE
 server.on("/rename", HTTP_POST, handleRename);
 server.on("/delete", HTTP_POST, handleDelete);
-server.on("/connector", HTTP_POST,
-  [](AsyncWebServerRequest *request){
+server.on("/connector", HTTP_POST, [](AsyncWebServerRequest *request){
     handleConnector(request);
-  }
-);
-server.on("/Books/*", HTTP_GET, [](AsyncWebServerRequest *request){
+});
+
+// Special handler for serving books directly
+server.on("^\\/Books\\/.*", HTTP_GET, [](AsyncWebServerRequest *request){
     String path = request->url();  // e.g. /Books/MyBook.epub
+
     if (!SD_MMC.exists(path)) {
-        request->send(404);
+        request->send(404, "text/plain", "File not found");
         return;
     }
+
     File file = SD_MMC.open(path, "r");
     if (!file) {
-        request->send(500);
+        request->send(500, "text/plain", "File open failed");
         return;
     }
 
+    // Detect mime type
     String mimeType = "application/octet-stream";
-    if (path.endsWith(".epub")) mimeType = "application/epub+zip";
+    if (path.endsWith(".pdf")) mimeType = "application/pdf";
+    else if (path.endsWith(".epub")) mimeType = "application/epub+zip";
+    else if (path.endsWith(".txt")) mimeType = "text/plain";
+    else if (path.endsWith(".cbz")) mimeType = "application/vnd.comicbook+zip";
+    else if (path.endsWith(".cbr")) mimeType = "application/vnd.comicbook-rar";
 
-    AsyncWebServerResponse *response = request->beginResponse(mimeType, file.size(), [file](uint8_t *buffer, size_t maxLen, size_t index) mutable -> size_t {
-        file.seek(index);
-        size_t bytesRead = file.read(buffer, maxLen);
-        if (bytesRead == 0) {
-            file.close();
+    // Stream file with correct headers
+    AsyncWebServerResponse *response = request->beginResponse(mimeType, file.size(),
+        [file](uint8_t *buffer, size_t maxLen, size_t index) mutable -> size_t {
+            file.seek(index);
+            size_t bytesRead = file.read(buffer, maxLen);
+            if (bytesRead == 0) file.close();
+            return bytesRead;
         }
-        return bytesRead;
-    });
+    );
 
-    if (path.endsWith(".epub")) {
-        String filename = path.substring(path.lastIndexOf('/') + 1);
-        response->addHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
-    }
+    // Add filename hint for downloads
+    String filename = path.substring(path.lastIndexOf('/') + 1);
+    response->addHeader("Content-Disposition", "inline; filename=\"" + filename + "\"");
 
     request->send(response);
 });
+
 
 server.on("/save", HTTP_POST, [](AsyncWebServerRequest *request){
   Serial.println("[SAVE] Request received");
@@ -1949,15 +3317,24 @@ server.on("/save", HTTP_POST, [](AsyncWebServerRequest *request){
 
   Serial.printf("[SAVE] Filename: %s\n", path.c_str());
   Serial.printf("[SAVE] Content length: %d\n", content.length());
+  // If the file exists, remove it first so we create a fresh file (avoids leftover bytes).
+  if (SD_MMC.exists(path)) {
+    if (!SD_MMC.remove(path)) {
+      Serial.printf("[SAVE] Warning: failed to remove existing file before writing: %s\n", path.c_str());
+      // Proceed anyway and attempt to open — but warn in logs.
+    }
+  }
 
-  // Open file for writing (overwrite)
+  // Open a new file for writing (this creates a new file)
   File f = SD_MMC.open(path, FILE_WRITE);
   if (!f) {
-    Serial.printf("[SAVE] Failed to open file: %s\n", path.c_str());
+    Serial.printf("[SAVE] Failed to open file for writing: %s\n", path.c_str());
     return request->send(500, "text/plain", "Failed to open " + path);
   }
 
-  size_t bytesWritten = f.print(content);
+  // Write exact bytes (binary-safe) and flush
+  size_t bytesWritten = f.write((const uint8_t*)content.c_str(), content.length());
+  f.flush();
   f.close();
 
   Serial.printf("[SAVE] Bytes written: %d\n", bytesWritten);
@@ -1969,10 +3346,12 @@ server.on("/save", HTTP_POST, [](AsyncWebServerRequest *request){
   request->send(200, "text/plain", "OK");
 });
 
+
 server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){
   StaticJsonDocument<512> doc;
   doc["rgbMode"] = settings.rgbMode;
   doc["rgbColor"] = settings.rgbColor;
+  doc["adminPassword"] = settings.adminPassword;
   doc["wifiSSID"] = settings.wifiSSID;
   doc["wifiPassword"] = settings.wifiPassword;
   doc["brightness"] = settings.brightness;
@@ -2051,7 +3430,139 @@ server.on("/settings", HTTP_POST, [](AsyncWebServerRequest *request){
   server.on("/cpu-temp", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "application/json", String("{\"temp\":") + currentTempC + "}");
   });
+  server.on("/api/index", HTTP_GET, [](AsyncWebServerRequest *request){
+    String path = "/";
+    if (request->hasParam("path")) path = normalizePath(request->getParam("path")->value());
+    String enc = encodeIndexName(path);
+    String nestedFile = String(INDEX_DIR) + "/" + enc + ".nested.ndjson";
 
+    // If nested index exists already, serve it
+    if (SD_MMC.exists(nestedFile)) {
+      AsyncWebServerResponse *resp = request->beginResponse(SD_MMC, nestedFile, "application/x-ndjson");
+      resp->addHeader("Cache-Control", "no-cache, no-store");
+      request->send(resp);
+      return;
+    }
+
+    // If small directory and we have memory -> try inline build synchronously
+    unsigned int items = countDirItems(path);
+    Serial.printf("[Index] Request for '%s' - nested index missing (items=%u)\n", path.c_str(), items);
+    if (items > 0 && items <= (unsigned int)MAX_NESTED_AUTOGEN_ITEMS && enoughHeapForIndex()) {
+      Serial.printf("[Index] Attempting INLINE build for '%s' (items=%u)\n", path.c_str(), items);
+      bool ok = writeNDIndexForDir(path, enc + ".nested.ndjson");
+      if (ok && SD_MMC.exists(nestedFile)) {
+        Serial.printf("[Index] INLINE build success for '%s' -> serving\n", path.c_str());
+        AsyncWebServerResponse *resp = request->beginResponse(SD_MMC, nestedFile, "application/x-ndjson");
+        resp->addHeader("Cache-Control", "no-cache, no-store");
+        request->send(resp);
+        return;
+      } else {
+        Serial.printf("[Index] INLINE build failed for '%s'\n", path.c_str());
+        // fallthrough to schedule background build
+      }
+    } else {
+      Serial.printf("[Index] Not building inline for '%s' (items=%u, heap=%u, limit=%u)\n",
+                    path.c_str(), (unsigned)items, (unsigned)uxTaskGetStackHighWaterMark(NULL), (unsigned)MAX_NESTED_AUTOGEN_ITEMS);
+    }
+
+    // fallback: schedule background build and return 202
+    spawnIndexBuild(path, enc + ".nested.ndjson");
+    request->send(202, "application/json",
+                  "{\"status\":\"building\",\"scope\":\"nested\",\"path\":\"" + path + "\"}");
+  });
+
+  // POST /api/reindex?path=/Shows  -> kicks off background reindexing
+  server.on("/api/reindex", HTTP_POST, [](AsyncWebServerRequest *request){
+    String path = "/";
+    if(request->hasParam("path", true)) path = request->getParam("path", true)->value();     // from POST body
+    else if(request->hasParam("path")) path = request->getParam("path")->value();            // from query
+    path = normalizePath(path);
+
+    // respond immediately
+    String j = "{\"status\":\"accepted\",\"path\":\"" + path + "\"}";
+    request->send(202, "application/json", j);
+
+    // spawn FreeRTOS task to do reindex (don't block webserver)
+    String *arg = new String(path);
+    BaseType_t ok = xTaskCreatePinnedToCore([](void *pv){
+      String p = *((String*)pv);
+      delete (String*)pv;
+      Serial.printf("[ReindexTask] start %s\n", p.c_str());
+
+      if(p == "/" || p == "/Shows"){
+        // build Shows bucket plus root
+        buildBucketIndex("/Shows");
+        buildBucketIndex("/");
+      } else {
+        // build bucket for requested path
+        // determine file name: if p is /Shows/ShowName -> produce per-show nested file
+        String token = p;
+        if(token.startsWith("/")) token = token.substring(1);
+        String outFile;
+        if(token.indexOf('/') >= 0){
+          // nested show: e.g. "Shows/GravityFalls" => "Shows__GravityFalls.nested.ndjson"
+          int slashPos = token.indexOf('/');
+          String bucket = token.substring(0, slashPos);
+          String name = token.substring(slashPos+1);
+          outFile = bucket + "__" + sanitizeToken(name) + ".nested.ndjson";
+          writeNDIndexForDir(p, outFile);
+        } else {
+          // top-level bucket
+          String fname = token + ".index.ndjson";
+          writeNDIndexForDir(p, fname);
+        }
+      }
+
+      Serial.printf("[ReindexTask] finished %s\n", p.c_str());
+      vTaskDelete(NULL);
+    }, "ReindexTask", 12*1024, arg, 1, NULL, 1);
+
+    if(ok != pdPASS){
+      Serial.println("[/api/reindex] task create failed");
+      delete arg;
+    }
+  });
+  server.on("/flash-mode", HTTP_POST, [](AsyncWebServerRequest *request){
+      Serial.println(">>> /flash-mode handler hit");
+      request->send(200, "text/plain", "OK: attempting to enter ROM download (flash) mode...");
+
+      // Give the HTTP response a moment to flush
+      delay(80);
+
+      // --- Show message on-screen (same UX as USB mode) ---
+      // Initialize display/UI stacks if not already initialized.
+      // These calls are safe if they are idempotent in your code (they are used in your USB handler).
+      Serial.println(">>> Preparing display to show FLASH mode message...");
+      LCD_Init();
+      Lvgl_Init();
+      ui_init();
+      btStop(); // stop bluetooth tasks if applicable
+
+      // Load the main UI screen and reveal the MediaGen text area
+      lv_scr_load(ui_Screen1);
+      lv_obj_clear_flag(ui_MediaGen, LV_OBJ_FLAG_HIDDEN);
+      lv_textarea_set_text(ui_MediaGen, "Flashing Mode, Ready for Update");
+      // Give LVGL a few cycles to flush to the screen so the user sees the message
+      for (int i = 0; i < 6; ++i) {
+        lv_timer_handler();
+        delay(50);
+      }
+
+      // Optional: turn off backlight and LEDs politely (uncomment if functions exist)
+      // Set_Backlight(0);   // reduce display brightness to 0
+      // rgb_off();          // stop RGB updates
+
+      // --- Now actually request ROM download boot and restart ---
+  #if defined(ARDUINO_ARCH_ESP32)
+      Serial.println(">>> Writing force-download flag and restarting (RTC_CNTL_FORCE_DOWNLOAD_BOOT).");
+      REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+      esp_restart(); // low-level restart into ROM download mode
+  #else
+      Serial.println(">>> Platform fallback: set_boot_mode(FLASH_MODE) and restart.");
+      set_boot_mode(FLASH_MODE);
+      ESP.restart();
+  #endif
+    });
   server.on("/enterUsb", HTTP_POST, [](AsyncWebServerRequest *request){
     Serial.println(">>> /enterUsb handler hit");
     request->send(200, "text/plain", "OK: entering USB MSC mode...");
@@ -2067,11 +3578,31 @@ attachInterrupt(BOOT_BUTTON_PIN, [](){
   esp_restart();            // actually reboot into USB mode
 }, FALLING);
 // Start the web server
-server.begin();
-updateToggleStatus(); // Reflect initial WiFi and SD status
-Serial.println("Web Server started!");
-}
+  server.begin();
+  updateToggleStatus(); // Reflect initial WiFi and SD status
+  Serial.println("Web Server started!");
 
+  // Now that the network, UI and server are up, spawn IndexWorker so it can run
+  // heavy indexing in background without blocking boot.
+  static bool indexWorkerStarted = false;
+  if (!indexWorkerStarted && indexQueue) {
+    BaseType_t r = xTaskCreatePinnedToCore(indexWorkerTask, "IndexWorker", 12 * 1024, NULL, 1, NULL, 1);
+    if (r != pdPASS) {
+      Serial.println("[ERROR] Failed to create IndexWorker task");
+    } else {
+      Serial.println("[IndexWorker] Task started");
+      indexWorkerStarted = true;
+    }
+  }
+
+  // Spawn bootCoordinatorTask so it can schedule boot-time scans without blocking setup.
+  BaseType_t br = xTaskCreatePinnedToCore(bootCoordinatorTask, "BootCoord", 8 * 1024, NULL, 1, NULL, 1);
+  if (br != pdPASS) {
+    Serial.println("[BootCoord] Failed to spawn Boot Coordinator");
+  } else {
+    Serial.println("[BootCoord] Task spawned");
+  }
+}
 // ==================== MAIN LOOP ====================
 
 void loop() {
@@ -2099,7 +3630,15 @@ void loop() {
       currentTempC = temperatureRead();
       lastTempReading = millis();
     }
-  
+    static uint32_t lastSdbarUpdate = 0;
+    if (sdbarDirty && (millis() - lastSdbarUpdate > 250)) {
+      updateSDBAR_UI_ThreadOnly();
+      lastSdbarUpdate = millis();
+    }
+    if (sdbarDirty) {
+    updateSDBAR();
+    sdbarDirty = false;
+    }
     delay(5); // Prevent watchdog starvation
     updateClientCount();
 }
@@ -2115,4 +3654,15 @@ void RGB_SetMode(uint8_t mode) {
         Set_Color(solidG, solidR, solidB);
     }
 }
+static unsigned long lastSweepMs = 0;
+void memorySweepIfNeeded() {
+  unsigned long now = millis();
+  if (now - lastSweepMs < 5000) return; // run every 5s
+  lastSweepMs = now;
 
+  size_t freeHeap = ESP.getFreeHeap();
+  if (freeHeap < 70000) {  // threshold: tune to your device
+    Serial.printf("[MEMSWEEP] low freeHeap=%u; doing sweep\n", (unsigned)freeHeap);
+    yield();
+  }
+}

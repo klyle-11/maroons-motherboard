@@ -1,0 +1,1156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Nomad — File Manager</title>
+  <script>
+  // apply saved theme *before* CSS paints to avoid flash
+  try {
+    const saved = localStorage.getItem('nomad_dark_mode');
+    if (saved === 'true') document.documentElement.classList.add('dark');
+  } catch (e) { /* ignore */ }
+</script>
+  <style>
+/* Shared tokens + dark-mode tokens */
+:root{
+  --accent: #0b66ff;        /* primary accent */
+  --accent-2: #0557d4;
+  --danger: #ff3b30;
+
+  --bg: #f6f9ff;
+  --panel: #ffffff;
+  --muted: #6b7a92;
+  --card-border: rgba(11,102,255,0.08);
+  --shadow: rgba(11,102,255,0.06);
+  --radius: 12px;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Courier New", monospace;
+
+  --text: #08223f;
+  --panel-text: #08223f;
+  --panel-bg: var(--panel);
+  --panel-border: var(--card-border);
+  --panel-shadow: 0 10px 30px var(--shadow);
+}
+
+/* Dark-mode variables (applied by .dark on root) */
+:root.dark,
+.dark {
+  --bg: #071018;
+  --panel: #071018;
+  --muted: #9aa6b3;
+  --accent: #4da3ff;
+  --accent-2: #2d7fd9;
+  --danger: #ff6b6b;
+  --card-border: rgba(255,255,255,0.03);
+  --shadow: rgba(0,0,0,0.4);
+  --text: #e6eef8;
+  --panel-text: #e6eef8;
+  --panel-bg: #071018;
+  --panel-border: rgba(255,255,255,0.03);
+  --panel-shadow: 0 10px 30px rgba(0,0,0,0.6);
+  background-color: var(--bg);
+}
+
+/* Base page */
+html,body{height:100%;margin:0;font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial;background:linear-gradient(180deg,var(--bg) 0%, var(--panel) 100%); color:var(--text);-webkit-font-smoothing:antialiased; box-sizing: border-box;}
+.wrap{min-height:100vh;padding:14px;display:flex;gap:14px;align-items:flex-start;box-sizing:border-box}
+
+/* Panel / surface */
+.panel{
+  background: var(--panel-bg);
+  border-radius: var(--radius);
+  padding: 14px;
+  box-shadow: var(--panel-shadow);
+  border: 1px solid var(--panel-border);
+  display:flex;
+  flex-direction:column;
+  overflow:visible;
+  color: var(--panel-text);
+}
+
+/* Layout sizes */
+.sidebar{width:260px;min-width:180px;max-width:320px}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+
+/* Header */
+.header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.brand{font-weight:800;color:var(--accent);font-size:16px}
+.sub{color:var(--muted);font-size:13px;margin-top:2px}
+
+/* Controls and buttons */
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{background:var(--panel-bg);border:1px solid var(--panel-border);padding:9px 12px;border-radius:10px;cursor:pointer;color:var(--accent-2);font-weight:700;font-size:13px}
+.btn.primary{background:linear-gradient(90deg,var(--accent),var(--accent-2));color:white;border:none;box-shadow:0 8px 20px rgba(11,102,255,0.12)}
+.btn.danger{background:transparent;border:1px solid rgba(255,59,48,0.12);color:var(--danger)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+
+/* Sidebar shortcuts */
+.sidebar .title{font-weight:800;color:var(--accent);margin-bottom:8px}
+.shortcut-list{display:flex;flex-direction:column;gap:8px}
+.shortcut{
+  padding:10px;
+  border-radius:10px;
+  background: var(--panel-bg);           /* <- clean single-color background */
+  border:1px solid rgba(11,102,255,0.04);
+  cursor:pointer;
+  color:var(--accent-2);
+  font-weight:700;
+  text-align:left;
+  display:block;
+  text-decoration:none;
+}
+.shortcut small{display:block;color:var(--muted);font-weight:600;margin-top:6px}
+
+/* Topbar/path */
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.pathbox{display:flex;align-items:center;gap:10px;min-width:240px;max-width:75%}
+.path{font-weight:800;color:var(--panel-text);font-size:15px}
+.selected-name{color:var(--muted);font-weight:700;font-size:13px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Browser area */
+.browser{flex:1;overflow:auto;padding:8px;border-radius:10px;background:var(--panel-bg);border:1px solid var(--panel-border)}
+ul.root{list-style:none;padding:8px;margin:0;display:flex;flex-direction:column;gap:8px}
+li.bucket{display:flex;flex-direction:column;border-radius:10px;padding:8px;border:1px solid rgba(11,102,255,0.03);background:transparent}
+.bucket-header{display:flex;align-items:center;gap:12px}
+.caret{
+  width:38px;height:38px;border-radius:8px;border:1px solid rgba(11,102,255,0.06);display:inline-flex;align-items:center;justify-content:center;
+  color:var(--muted);cursor:pointer;font-size:14px;background:var(--panel-bg);
+}
+.bucket-title{font-weight:800;color:var(--panel-text);cursor:pointer}
+.child{display:none;padding:8px 10px 0 50px}
+.child.visible{display:block}
+
+/* crumbs, lists, items */
+.crumbs{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.crumb{cursor:pointer;color:var(--accent-2);font-weight:700}
+.file-list{list-style:none;padding-left:0;margin:0;display:flex;flex-direction:column;gap:6px}
+.file-item{display:flex;align-items:center;justify-content:space-between;padding:10px;border-radius:8px;cursor:pointer}
+.file-name{font-weight:700;color:var(--panel-text)}
+.file-type{color:var(--muted);font-size:12px}
+
+/* Selected/highlight */
+.selected{
+  background: linear-gradient(90deg, rgba(11,102,255,0.06), rgba(11,102,255,0.03));
+  outline: 2px solid rgba(11,102,255,0.06);
+  box-shadow: 0 10px 30px rgba(11,102,255,0.04);
+}
+
+/* Upload area + progress */
+.upload-area{border:1px dashed rgba(11,102,255,0.06);padding:10px;border-radius:8px;text-align:center;background:linear-gradient(180deg,var(--panel-bg),rgba(255,255,255,0.98));cursor:pointer}
+.progress{width:100%;height:10px;background:transparent;border-radius:6px;overflow:hidden;border:1px solid rgba(11,102,255,0.06);display:none}
+.progress > div{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent-2));transition:width .12s linear}
+
+/* Modal/editor */
+.modal-backdrop{position:fixed;inset:0;background:rgba(10,20,40,0.45);display:none;align-items:center;justify-content:center;z-index:999}
+.modal{width:min(1100px,96%);max-height:90vh;border-radius:10px;background:var(--panel-bg);padding:12px;overflow:auto;box-shadow:var(--panel-shadow);border:1px solid var(--panel-border)}
+.editor{width:100%;height:60vh;font-family:var(--mono);font-size:13px;padding:8px;border:1px solid rgba(0,0,0,0.06);border-radius:6px;box-sizing:border-box;resize:vertical;background:linear-gradient(180deg,#fff,#fbfdff);color:var(--panel-text)}
+
+/* small text helpers */
+.status{font-size:13px;color:var(--muted);margin-top:10px}
+.muted{color:var(--muted)}
+.small{font-size:13px;color:var(--muted)}
+.meta{display:flex;gap:8px;align-items:center}
+.badge{background:rgba(11,102,255,0.06);padding:4px 8px;border-radius:8px;font-weight:700;color:var(--accent-2)}
+.empty{padding:18px;color:var(--muted);text-align:center;border-radius:8px}
+
+/* responsive adjustments (mobile friendly) */
+@media (max-width: 880px){
+  .wrap{flex-direction:column;padding:10px}
+  .sidebar{order:1;width:100%;background:transparent;border:none;padding:0;margin-bottom:8px}
+  .main{order:2;width:100%}
+  .shortcut-list{flex-direction:row;flex-wrap:wrap;gap:8px}
+  .shortcut{padding:8px 10px;font-size:13px;border-radius:8px}
+  .browser{max-height:none;border-radius:8px}
+  li.bucket{border:none;padding:4px 0}
+  .wrap{align-items:stretch}
+  /* make header controls horizontally scrollable but tidy */
+  .header{align-items:stretch}
+  .controls{overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch}
+  .controls .btn{flex:0 0 auto}
+  .topbar{flex-direction:column;gap:8px;align-items:stretch}
+  .pathbox{max-width:100%}
+  .progress{width:100%}
+}
+
+/* tiny phones */
+@media (max-width:420px){
+  .brand{font-size:14px}
+  .controls .btn{padding:8px 10px;font-size:12px}
+  .shortcut{font-size:12px;padding:6px 8px}
+}
+
+/* utilities */
+.hidden{display:none!important}
+.center{text-align:center}
+</style>
+
+</head>
+<body>
+  <div class="wrap">
+    <aside class="panel sidebar" aria-label="Shortcuts">
+      <div class="title">Shortcuts</div>
+      <div class="sub" style="margin-bottom:8px">Quick open</div>
+      <div class="shortcut-list" role="list">
+        <button class="shortcut" data-path="/" id="shortcut-all" type="button">All <small>/ (root)</small></button>
+        <button class="shortcut" data-path="/Movies" type="button">Movies</button>
+        <button class="shortcut" data-path="/Shows" type="button">Shows</button>
+        <button class="shortcut" data-path="/Books" type="button">Books</button>
+        <button class="shortcut" data-path="/Music" type="button">Music</button>
+        <button class="shortcut" data-path="/Gallery" type="button">Gallery</button>
+        <button class="shortcut" data-path="/Files" type="button">Files</button>
+      </div>
+      <div style="margin-top:12px">
+        <div class="sub" style="margin-bottom:6px">Utilities</div>
+        <button id="btn-refresh" class="shortcut" type="button">Refresh index</button>
+        <button id="btn-clear-cache" class="shortcut" type="button">Clear client cache</button>
+      </div>
+    </aside>
+
+    <main class="panel main" role="main" aria-live="polite">
+      <div class="header">
+        <div>
+          <div class="brand">NOMAD • File Manager</div>
+          <div class="sub">Browse files on the SD card. Select a folder to upload into it. Rename, delete, and edit text files.</div>
+        </div>
+
+        <div class="controls" aria-hidden="false">
+          <input id="upload-input" type="file" style="display:none"/>
+          <button id="btn-back" class="btn" disabled type="button" title="Back in inline history">Back</button>
+          <button id="btn-upload" class="btn primary" type="button" title="Upload file">Upload</button>
+          <button id="btn-new-folder" class="btn" type="button" title="Create folder">New Folder</button>
+          <button id="btn-rename" class="btn" disabled type="button" title="Rename">Rename</button>
+          <button id="btn-delete" class="btn danger" disabled type="button" title="Delete">Delete</button>
+          <button id="btn-download" class="btn" disabled type="button" title="Download">Download</button>
+          <button id="btn-edit" class="btn" disabled type="button" title="Edit text file">Edit</button>
+        </div>
+      </div>
+
+      <div class="topbar">
+        <div class="pathbox" style="min-width:280px;max-width:60%">
+          <div class="path" id="current-path" title="Current path">/</div>
+          <div class="selected-name" id="selected-name" title=""></div>
+        </div>
+
+        <div style="width:360px;min-width:160px">
+          <div class="progress" id="upload-progress" aria-hidden="true"><div></div></div>
+        </div>
+      </div>
+
+      <section class="browser" aria-label="File browser">
+        <ul id="root-items" class="root" role="list" aria-live="polite">
+          <li class="file-status small">Loading…</li>
+        </ul>
+      </section>
+
+      <div class="status" id="status-line">Status: idle</div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="editor-modal" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal" role="document">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-weight:800;color:var(--accent-2)" id="editor-title">Edit</div>
+        <div>
+          <button id="editor-download" class="btn" type="button">Download</button>
+          <button id="editor-cancel" class="btn" type="button">Cancel</button>
+          <button id="editor-save" class="btn primary" type="button">Save</button>
+        </div>
+      </div>
+      <textarea id="editor-area" class="editor" spellcheck="false" aria-label="Editor"></textarea>
+    </div>
+  </div>
+
+  <!-- jQuery must be valid JS at this path -->
+  <script src="assets/jquery.min.js"></script>
+
+  <script>
+  (function(){
+    'use strict';
+
+    /* Endpoints and config */
+    const indexEndpoint = '/api/index';               // GET ?path=
+    const nestedIndexEndpoint = '/api/index-nested'; // legacy if used
+    const connectorEndpoint = '/connector';           // POST {dir}
+    const uploadEndpoint = '/upload';
+    const mkdirEndpoint = '/mkdir';
+    const deleteEndpoint = '/delete';
+    const renameEndpoint = '/rename';
+    const saveEndpoint = '/save';
+    const reindexEndpoint = '/api/reindex';
+
+    const CACHE_TTL = 1500;
+    const POLL_NEW_ATTEMPTS = 18;
+    const POLL_NEW_DELAY = 700;
+    const UPLOAD_TIMEOUT = 5 * 60 * 1000;
+    const DEFAULT_MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+    const INLINE_INDEX_POLL_MS = 700;
+    const INLINE_INDEX_POLL_ATTEMPTS = 20;
+
+    /* Elements */
+    let $rootItems = $('#root-items');
+    const $statusLine = $('#status-line');
+    const $uploadInput = $('#upload-input');
+    const $uploadProgress = $('#upload-progress');
+    const $uploadBar = $('#upload-progress > div');
+    const $btnUpload = $('#btn-upload');
+    const $btnNewFolder = $('#btn-new-folder');
+    const $btnRename = $('#btn-rename');
+    const $btnDelete = $('#btn-delete');
+    const $btnDownload = $('#btn-download');
+    const $btnEdit = $('#btn-edit');
+    const $btnBack = $('#btn-back');
+    const $currentPath = $('#current-path');
+    const $selectedName = $('#selected-name');
+    const $editorModal = $('#editor-modal');
+    const $editorArea  = $('#editor-area');
+    const $editorTitle = $('#editor-title');
+
+    /* State */
+    let indexCache = new Map();
+    let openDirs = new Set();
+    let selectedPath = null;
+    let selectedIsDir = false;
+    let outstandingOps = 0;
+    let historyStack = [];
+    let MAX_UPLOAD_BYTES = DEFAULT_MAX_UPLOAD_BYTES;
+
+    /* Utilities */
+    function norm(p){ if(p===undefined || p===null) return '/'; p = String(p); if(!p.startsWith('/')) p='/' + p; p = p.replace(/\/+/g,'/'); while(p.length>1 && p.endsWith('/')) p=p.slice(0,-1); return p === '' ? '/' : p; }
+    function joinPath(a,b){ a = norm(a||'/'); if (a === '/') return norm('/' + b); return norm(a + '/' + b); }
+    function parentDir(p){ p = norm(p); if (p === '/') return '/'; const i = p.lastIndexOf('/'); return i<=0?'/':p.slice(0,i); }
+    function basename(p){ p = norm(p); if (p === '/') return '/'; const i = p.lastIndexOf('/'); return i>=0? p.slice(i+1): p; }
+    function isTextFile(n){ return /\.(txt|json|html?|css|js|md|xml|csv|yml|yaml|ini|conf)$/i.test(n); }
+    function fileCategory(name){
+      if (!name) return 'file';
+      const ext = (name.split('.').pop()||'').toLowerCase();
+      if (/^(mp4|mkv|avi|mov|webm|mpg|mpeg|ts|m2ts)$/.test(ext)) return 'video';
+      if (/^(mp3|flac|wav|m4a|aac|ogg|opus)$/.test(ext)) return 'audio';
+      if (/^(epub|pdf|mobi|azw3|fb2)$/.test(ext)) return 'book';
+      if (/^(jpg|jpeg|png|gif|webp|bmp|tiff)$/.test(ext)) return 'image';
+      if (/^(txt|md|json|xml|csv|html|htm|css|js|ini|conf|yml|yaml)$/i.test(ext)) return 'text';
+      return 'file';
+    }
+    function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+    function setBusy(msg){ outstandingOps++; $statusLine.text(msg || 'Working…'); $('.controls .btn').prop('disabled', true); $btnUpload.prop('disabled', true); }
+    function clearBusy(msg){ outstandingOps = Math.max(0, outstandingOps-1); if (outstandingOps === 0) { $('.controls .btn').prop('disabled', false); $statusLine.text(msg || 'Idle'); } else { $statusLine.text(msg || ('Working ('+outstandingOps+')…')); } }
+
+    /* Simple cache wrapper */
+    function cachePut(key, value){ indexCache.set(key, { ts: Date.now(), data: value }); }
+    function cacheGet(key){
+      const v = indexCache.get(key);
+      if (!v) return null;
+      if ((Date.now() - v.ts) > CACHE_TTL) { indexCache.delete(key); return null; }
+      return v.data;
+    }
+    function clearCachePrefix(path){
+      path = norm(path);
+      for (const k of Array.from(indexCache.keys())){
+        if (k === path || k.startsWith(path + '/') || path.startsWith(k + '/')) indexCache.delete(k);
+      }
+    }
+
+    /* Index parsing (robust handling of ndjson or JSON arrays or HTML connector) */
+    function parseIndexText(text){
+      try {
+        const j = JSON.parse(text);
+        if (Array.isArray(j)) return { header: null, entries: j };
+        if (j && j.entries && Array.isArray(j.entries)) return { header: j.header || null, entries: j.entries };
+      } catch(e){}
+      // try ndjson lines
+      const lines = (text||'').split('\n').filter(Boolean);
+      let header = null; const entries = [];
+      for (let i=0;i<lines.length;i++){
+        try {
+          const o = JSON.parse(lines[i]);
+          if (i===0 && o && !o.n) { header = o; continue; }
+          entries.push(o);
+        } catch(e){}
+      }
+      return { header, entries };
+    }
+
+    function connectorHtmlToEntries(html){
+      const tmp = document.createElement('div'); tmp.innerHTML = html;
+      const li = tmp.querySelectorAll('li');
+      const ents = [];
+      li.forEach(item => {
+        let a = item.querySelector('a');
+        let txt = (a && a.textContent) ? a.textContent.trim() : item.textContent.trim();
+        let rel = (a && (a.getAttribute('rel') || a.getAttribute('href'))) || txt;
+        let isDir = item.classList.contains('directory') || /\/$/.test(rel);
+        let full = rel.startsWith('/') ? norm(rel) : norm('/' + rel);
+        ents.push({ n: txt, t: isDir ? 'd' : 'f', p: full });
+      });
+      return { header:null, entries:ents };
+    }
+
+    /* fetchIndexDirect: tries index API, handles 202 (building) by polling, falls back to nested endpoint, static index files, then connector */
+    async function fetchIndexDirect(path){
+      path = norm(path);
+      const cached = cacheGet(path);
+      if (cached) return cached;
+
+      // 1) try index endpoint that can build inline
+      try {
+        const res = await fetch(indexEndpoint + '?path=' + encodeURIComponent(path), { cache: 'no-store' });
+        if (res.status === 200) {
+          const txt = await res.text();
+          const parsed = parseIndexText(txt);
+          cachePut(path, parsed);
+          return parsed;
+        }
+        if (res.status === 202) {
+          // server accepted inline build — poll for nested index (or final result)
+          setBusy('Indexing ' + path + '…');
+          for (let i=0;i<INLINE_INDEX_POLL_ATTEMPTS;i++){
+            await sleep(INLINE_INDEX_POLL_MS);
+            // check nested endpoint first
+            try {
+              const check = await fetch(nestedIndexEndpoint + '?path=' + encodeURIComponent(path), { cache: 'no-store' });
+              if (check.ok) {
+                const txt = await check.text();
+                const parsed = parseIndexText(txt);
+                clearBusy('Indexed');
+                cachePut(path, parsed);
+                return parsed;
+              }
+            } catch(e){}
+            // check indexEndpoint again (may return 200 now)
+            try {
+              const retry = await fetch(indexEndpoint + '?path=' + encodeURIComponent(path), { cache: 'no-store' });
+              if (retry.status === 200) {
+                const txt = await retry.text();
+                const parsed = parseIndexText(txt);
+                clearBusy('Indexed');
+                cachePut(path, parsed);
+                return parsed;
+              }
+            } catch(e){}
+          }
+          clearBusy('Index queued');
+          // fall through to other strategies (connector)
+        }
+      } catch(e){
+        // ignore and try next
+      }
+
+      // 2) try the nestedIndexEndpoint (some firmwares provide it)
+      try {
+        const res = await fetch(nestedIndexEndpoint + '?path=' + encodeURIComponent(path), { cache: 'no-store' });
+        if (res.ok) {
+          const txt = await res.text();
+          const parsed = parseIndexText(txt);
+          cachePut(path, parsed);
+          return parsed;
+        }
+      } catch(e){}
+
+      // 3) try direct index files (ndjson/json)
+      const staticTries = [
+        norm(path + '/.index.ndjson'),
+        norm(path + '/index.ndjson'),
+        norm(path + '/.index.json'),
+        norm(path + '/index.json'),
+      ];
+      for (const url of staticTries){
+        try {
+          const r = await fetch(url, { cache: 'no-store' });
+          if (r.ok) {
+            const txt = await r.text();
+            const parsed = parseIndexText(txt);
+            cachePut(path, parsed);
+            return parsed;
+          }
+        } catch(e){}
+      }
+
+      // 4) connector fallback (HTML directory listing)
+      try {
+        const html = await new Promise((resolve, reject) => {
+          $.post(connectorEndpoint, { dir: path })
+            .done(res => resolve(res))
+            .fail((xhr) => reject(new Error('connector error: ' + xhr.status)));
+        });
+        const parsed = connectorHtmlToEntries(html);
+        cachePut(path, parsed);
+        return parsed;
+      } catch(e){
+        // final fallback: empty
+      }
+
+      const empty = { header:null, entries:[] };
+      cachePut(path, empty);
+      return empty;
+    }
+
+    /* fetchIndex: attempt direct, and if empty, walk parents (preserve original fallback behavior) */
+    async function fetchIndex(path){
+      path = norm(path);
+      const direct = await fetchIndexDirect(path);
+      if (direct && Array.isArray(direct.entries) && direct.entries.length > 0) return direct;
+
+      // walk up parents
+      let p = path;
+      while (true){
+        const parent = parentDir(p);
+        if (parent === p) break;
+        p = parent;
+        const cand = await fetchIndexDirect(p);
+        if (cand && Array.isArray(cand.entries) && cand.entries.length > 0) return cand;
+        if (p === '/') break;
+      }
+
+      const root = await fetchIndexDirect('/');
+      return root || { header:null, entries:[] };
+    }
+
+    /* Normalize server entries into the flat listing for a given requestedPath */
+    function normalizeIndexEntries(idx, requestedPath){
+      requestedPath = norm(requestedPath);
+      const raw = (idx && idx.entries) ? idx.entries : [];
+      const map = new Map();
+      for (const e of raw){
+        let full = e.p || e.path || null;
+        if (!full && e.n && String(e.n).startsWith('/')) full = e.n;
+        if (!full && e.n) full = joinPath(requestedPath, e.n);
+        if (!full) continue;
+        full = norm(full);
+        // Only include items that are inside requestedPath (or top-level)
+        if (requestedPath !== '/' && full !== requestedPath && !full.startsWith(requestedPath + '/')) continue;
+        const rel = requestedPath === '/' ? (full.startsWith('/') ? full.slice(1) : full) : (full === requestedPath ? '' : full.slice(requestedPath.length + 1));
+        if (rel === '') continue;
+        const first = rel.split('/')[0];
+        if (!first) continue;
+        const isDir = (rel.indexOf('/') !== -1) || (e.t === 'd' || e.type === 'dir' || e.kind === 'dir');
+        const existing = map.get(first);
+        if (!existing) map.set(first, { n: first, t: isDir ? 'd' : 'f' });
+        else if (isDir) existing.t = 'd';
+      }
+      const out = Array.from(map.values());
+      out.sort((a,b) => { if (a.t==='d' && b.t!=='d') return -1; if (a.t!=='d' && b.t==='d') return 1; return a.n.localeCompare(b.n, undefined, {sensitivity:'base'}); });
+      return out;
+    }
+
+    /* Render functions */
+    async function renderDirectory(path){
+      $rootItems.html('<li class="file-status small">Loading…</li>');
+      const showPath = norm(path || '/');
+      $currentPath.text(showPath);
+      try {
+        const idx = await fetchIndex(showPath);
+        const entries = normalizeIndexEntries(idx, showPath);
+        const dirs = entries.filter(e => e.t === 'd');
+        const files = entries.filter(e => e.t !== 'd');
+        const frag = document.createDocumentFragment();
+
+        if (dirs.length === 0 && files.length === 0) {
+          const li = document.createElement('li'); li.className = 'empty'; li.textContent = 'Empty';
+          frag.appendChild(li);
+        } else {
+          // directories first
+          for (const d of dirs){
+            const rel = joinPath(showPath, d.n);
+            const li = document.createElement('li'); li.className = 'bucket'; li.setAttribute('data-rel', rel);
+            const header = document.createElement('div'); header.className = 'bucket-header';
+            const caret = document.createElement('button'); caret.className = 'caret'; caret.setAttribute('aria-expanded','false'); caret.setAttribute('aria-label','Toggle ' + d.n); caret.textContent = '▸';
+            const title = document.createElement('div'); title.className = 'bucket-title'; title.setAttribute('role','button'); title.setAttribute('tabindex','0'); title.textContent = d.n;
+            header.appendChild(caret); header.appendChild(title);
+            const child = document.createElement('div'); child.className = 'child'; child.setAttribute('data-basepath', rel); child.setAttribute('data-viewpath', rel);
+            li.appendChild(header); li.appendChild(child);
+
+            // event handlers
+            title.addEventListener('click', (e) => { selectItem(rel, true, d.n); toggleInline(rel, li, child, caret); });
+            title.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectItem(rel, true, d.n); toggleInline(rel, li, child, caret); }});
+            caret.addEventListener('click', (e) => { e.preventDefault(); selectItem(rel, true, d.n); toggleInline(rel, li, child, caret); });
+
+            frag.appendChild(li);
+          }
+
+          if (files.length){
+            const headerLi = document.createElement('li'); headerLi.style.padding = '6px'; headerLi.style.color = 'var(--muted)'; headerLi.style.fontWeight='700'; headerLi.textContent = 'Files in ' + showPath;
+            frag.appendChild(headerLi);
+
+            for (const f of files){
+              const rel = joinPath(showPath, f.n);
+              const li = document.createElement('li'); li.className = 'file-item'; li.setAttribute('data-rel', rel); li.setAttribute('data-type', 'f'); li.setAttribute('role','button'); li.tabIndex = 0;
+              const meta = document.createElement('div'); meta.className = 'meta';
+              const name = document.createElement('div'); name.className = 'file-name'; name.textContent = f.n;
+              const type = document.createElement('div'); type.className = 'file-type small'; type.style.marginLeft = '8px'; type.textContent = fileCategory(f.n);
+              meta.appendChild(name); meta.appendChild(type);
+              li.appendChild(meta);
+
+              li.addEventListener('click', (e) => { selectItem(rel,false,f.n); });
+              li.addEventListener('keydown', (e) => { if (e.key === 'Enter') selectItem(rel,false,f.n); });
+              li.addEventListener('dblclick', (e) => { openOrDownload(rel); });
+
+              frag.appendChild(li);
+            }
+          }
+        }
+
+        // render
+        $rootItems.empty();
+        $rootItems.get(0).appendChild(frag);
+
+        // restore opened dirs
+        openDirs.forEach(dir => {
+          const row = document.querySelector(`#root-items li.bucket[data-rel="${dir}"]`);
+          if (row) {
+            const caret = row.querySelector('.caret');
+            const wrap = row.querySelector('.child');
+            caret.textContent = '▾'; caret.setAttribute('aria-expanded','true');
+            openInlineChildView(dir, wrap).catch(()=>{});
+          }
+        });
+
+        $statusLine.text('Loaded.');
+      } catch (err) {
+        console.error(err);
+        $rootItems.html('<li class="small">Index not available</li>');
+        $statusLine.text('Index not available: ' + (err && err.message ? err.message : 'unknown'));
+      }
+    }
+
+    /* Inline toggle and child view — fixed breadcrumb slicing */
+    async function toggleInline(dirPath, $rowElem, $childWrap, $caretElem){
+      dirPath = norm(dirPath);
+      const $row = ($rowElem instanceof Element) ? $rowElem : document.querySelector($rowElem);
+      const $child = ($childWrap instanceof Element) ? $childWrap : $row.querySelector('.child');
+      const $caret = ($caretElem instanceof Element) ? $caretElem : $row.querySelector('.caret');
+      if ($child.classList.contains('visible')) {
+        $child.classList.remove('visible'); $caret.textContent = '▸'; $caret.setAttribute('aria-expanded','false'); openDirs.delete(dirPath);
+        $row.classList.remove('selected');
+        if (historyStack.length && historyStack[historyStack.length-1] === dirPath) historyStack.pop();
+        updateBackButton();
+        if (!selectedPath) $currentPath.text('/');
+        return;
+      }
+
+      $caret.textContent = '▾'; $caret.setAttribute('aria-expanded','true');
+      openDirs.add(dirPath);
+      $row.classList.add('selected');
+      selectedPath = dirPath; selectedIsDir = true;
+      $selectedName.textContent = basename(dirPath); $selectedName.title = dirPath;
+      $currentPath.textContent = dirPath;
+      if (!historyStack.length || historyStack[historyStack.length-1] !== dirPath) historyStack.push(norm(dirPath));
+      updateBackButton();
+      $child.setAttribute('data-basepath', dirPath);
+      $child.setAttribute('data-viewpath', dirPath);
+      $child.innerHTML = '<div class="small">Loading…</div>';
+      $child.classList.add('visible');
+      await openInlineChildView(dirPath, $child);
+    }
+
+    async function openInlineChildView(viewPath, $childWrap){
+      viewPath = norm(viewPath);
+      $childWrap.setAttribute('data-viewpath', viewPath);
+      $childWrap.innerHTML = '<div class="small">Loading…</div>';
+      try {
+        const idx = await fetchIndex(viewPath);
+        const items = normalizeIndexEntries(idx, viewPath);
+        const dirs = items.filter(e=>e.t==='d');
+        const files = items.filter(e=>e.t!=='d');
+        const container = document.createElement('div');
+
+        // compute breadcrumbs relative to basePath
+        const basePath = $childWrap.getAttribute('data-basepath') || parentDir(viewPath);
+        let rel;
+        if (viewPath === basePath) rel = '';
+        else if (basePath === '/') rel = viewPath.slice(1);
+        else if (viewPath.startsWith(basePath + '/')) rel = viewPath.slice(basePath.length + 1);
+        else rel = viewPath.slice(1);
+
+        const segments = rel ? rel.split('/').filter(Boolean) : [];
+        const crumbBar = document.createElement('div'); crumbBar.className = 'crumbs';
+        const baseName = basename(basePath) || '/';
+        const baseCrumb = document.createElement('div'); baseCrumb.className = 'crumb small'; baseCrumb.setAttribute('data-path', basePath); baseCrumb.textContent = '← ' + baseName;
+        baseCrumb.addEventListener('click', () => openInlineChildView(basePath, $childWrap));
+        crumbBar.appendChild(baseCrumb);
+        let acc = basePath === '/' ? '' : basePath;
+        for (let i=0;i<segments.length;i++){
+          acc = acc + '/' + segments[i];
+          const segPath = norm(acc);
+          const segEl = document.createElement('div'); segEl.className = 'crumb small'; segEl.setAttribute('data-path', segPath); segEl.textContent = segments[i];
+          segEl.addEventListener('click', () => openInlineChildView(segPath, $childWrap));
+          crumbBar.appendChild(segEl);
+        }
+        container.appendChild(crumbBar);
+
+        if (dirs.length){
+          const list = document.createElement('ul'); list.className = 'file-list';
+          for (const d of dirs){
+            const name = d.n;
+            const rel = joinPath(viewPath, name);
+            const item = document.createElement('li'); item.className = 'file-item'; item.setAttribute('data-rel', rel); item.setAttribute('data-type','d'); item.tabIndex = 0;
+            const meta = document.createElement('div'); meta.className = 'meta';
+            const nm = document.createElement('div'); nm.className = 'file-name'; nm.textContent = name;
+            const typ = document.createElement('div'); typ.className = 'file-type small'; typ.style.marginLeft = '8px'; typ.textContent = 'folder';
+            meta.appendChild(nm); meta.appendChild(typ);
+            item.appendChild(meta);
+            item.addEventListener('click', () => {
+              selectItem(rel,true,name);
+              if (!historyStack.length || historyStack[historyStack.length-1] !== rel) historyStack.push(norm(rel));
+              updateBackButton();
+              // navigate deeper inside same child wrap
+              openInlineChildView(rel, $childWrap);
+            });
+            list.appendChild(item);
+          }
+          container.appendChild(list);
+        }
+
+        if (files.length){
+          const list = document.createElement('ul'); list.className = 'file-list';
+          for (const f of files){
+            const name = f.n;
+            const rel = joinPath(viewPath, name);
+            const item = document.createElement('li'); item.className = 'file-item'; item.setAttribute('data-rel', rel); item.setAttribute('data-type','f'); item.tabIndex = 0;
+            const meta = document.createElement('div'); meta.className = 'meta';
+            const nm = document.createElement('div'); nm.className = 'file-name'; nm.textContent = name;
+            const typ = document.createElement('div'); typ.className = 'file-type small'; typ.style.marginLeft = '8px'; typ.textContent = fileCategory(name);
+            meta.appendChild(nm); meta.appendChild(typ);
+            item.appendChild(meta);
+            item.addEventListener('click', () => selectItem(rel,false,name));
+            item.addEventListener('dblclick', () => openOrDownload(rel));
+            list.appendChild(item);
+          }
+          container.appendChild(list);
+        }
+
+        $childWrap.innerHTML = '';
+        $childWrap.appendChild(container);
+      } catch (err) {
+        console.error(err);
+        $childWrap.innerHTML = '<div class="small muted">Not available</div>';
+      }
+    }
+
+    /* Selection and button state */
+    function selectItem(rel,isDir,displayName){
+      rel = norm(rel);
+      document.querySelectorAll('#root-items .file-item, #root-items .bucket').forEach(el => el.classList.remove('selected'));
+      const el = document.querySelector(`[data-rel="${rel}"]`);
+      if(el) el.classList.add('selected');
+      selectedPath = rel; selectedIsDir = !!isDir;
+      $selectedName.text(displayName || basename(rel)).attr('title', rel);
+      $currentPath.text(rel);
+      updateButtons();
+    }
+
+    function updateButtons(){
+      const has = !!selectedPath;
+      $btnRename.prop('disabled', !has).toggleClass('active', !!has);
+      $btnDelete.prop('disabled', !has).toggleClass('active', !!has);
+      $btnDownload.prop('disabled', !(has && !selectedIsDir)).toggleClass('active', !!(has && !selectedIsDir));
+      $btnEdit.prop('disabled', !(has && !selectedIsDir && isTextFile(basename(selectedPath)))).toggleClass('active', !!(has && !selectedIsDir && isTextFile(basename(selectedPath))));
+    }
+
+    function updateBackButton(){ $btnBack.prop('disabled', historyStack.length <= 1); }
+
+    async function goBackOne(){
+      if (historyStack.length <= 1) return;
+      historyStack.pop();
+      const prev = historyStack[historyStack.length - 1];
+      if (!prev) { goToRoot(); return; }
+      const normalizedPrev = norm(prev);
+      // If the prev is a top-level bucket visible in the root, restore that inline view
+      const row = document.querySelector(`#root-items li.bucket[data-rel="${normalizedPrev}"]`);
+      if (row) {
+        const wrap = row.querySelector('.child');
+        wrap.classList.add('visible');
+        openInlineChildView(normalizedPrev, wrap);
+        const caret = row.querySelector('.caret');
+        if (caret) { caret.textContent = '▾'; caret.setAttribute('aria-expanded','true'); }
+        updateBackButton();
+        $currentPath.text(normalizedPrev);
+        selectItem(normalizedPrev, true, basename(normalizedPrev));
+        return;
+      }
+      // if not present, render directory only
+      showDirectoryOnly(normalizedPrev);
+      updateBackButton();
+    }
+
+    /* Replace the root list and optionally reopen previously open buckets */
+    async function reloadView(action='Refreshed', newSelected=null, reopenDir=null){
+      const prevOpen = new Set(openDirs);
+      const prevSelected = newSelected ? norm(newSelected) : selectedPath;
+      if (reopenDir) prevOpen.add(norm(reopenDir));
+      openDirs.clear();
+      selectedPath = null; selectedIsDir = false; $selectedName.text('').attr('title','');
+      updateButtons();
+      const parent = document.createElement('ul'); parent.id = 'root-items'; parent.className = 'root'; parent.setAttribute('role','list'); parent.setAttribute('aria-live','polite');
+      $('#root-items').replaceWith(parent);
+      $rootItems = $('#root-items');
+      setTimeout(()=> {
+        renderDirectory('/').then(()=> {
+          prevOpen.forEach(dir => {
+            const row = document.querySelector(`#root-items li.bucket[data-rel="${dir}"]`);
+            if (row) {
+              const caret = row.querySelector('.caret');
+              const wrap = row.querySelector('.child');
+              caret.textContent = '▾'; caret.setAttribute('aria-expanded','true');
+              openInlineChildView(dir, wrap).catch(()=>{});
+            }
+          });
+          if (prevSelected) {
+            const sel = document.querySelector(`#root-items [data-rel="${prevSelected}"]`);
+            if (sel) sel.classList.add('selected');
+            $currentPath.text(prevSelected || '/');
+          }
+          $statusLine.text(action + '.');
+        }).catch(()=>{ $statusLine.text('Refresh failed'); });
+      }, 120);
+    }
+
+    async function showDirectoryOnly(path){
+      openDirs.clear();
+      $('#root-items').empty();
+      const dir = norm(path);
+      const name = basename(dir) || '/';
+      const li = document.createElement('li'); li.className = 'bucket'; li.setAttribute('data-rel', dir);
+      const header = document.createElement('div'); header.className = 'bucket-header';
+      const caret = document.createElement('div'); caret.className = 'caret'; caret.textContent = '▾';
+      const label = document.createElement('div'); label.className = 'bucket-title'; label.textContent = name;
+      const childWrap = document.createElement('div'); childWrap.className = 'child visible'; childWrap.setAttribute('data-viewpath', dir); childWrap.setAttribute('data-basepath', dir);
+      header.appendChild(caret); header.appendChild(label);
+      li.appendChild(header); li.appendChild(childWrap);
+      document.getElementById('root-items').appendChild(li);
+
+      label.addEventListener('click', ()=>{ selectItem(dir,true,name); });
+      selectedPath = dir; selectedIsDir = true; $selectedName.text(basename(dir)).attr('title', dir); updateButtons();
+      openDirs.add(dir);
+      $currentPath.text(dir);
+      historyStack = [norm(dir)];
+      updateBackButton();
+      await openInlineChildView(dir, childWrap);
+    }
+
+    /* Drag & drop */
+    function initDragDrop(){
+      const browser = document.querySelector('.browser');
+      browser.addEventListener('dragover', (e) => { e.preventDefault(); browser.classList.add('dragover'); });
+      browser.addEventListener('dragleave', (e) => { e.preventDefault(); browser.classList.remove('dragover'); });
+      browser.addEventListener('drop', (e) => {
+        e.preventDefault();
+        browser.classList.remove('dragover');
+        const dt = e.dataTransfer;
+        if (!dt || !dt.files || !dt.files.length) return;
+        const file = dt.files[0];
+        const target = (selectedPath && selectedIsDir) ? selectedPath : (selectedPath && !selectedIsDir ? parentDir(selectedPath) : '/');
+        uploadFileToDir(file, target);
+      });
+    }
+
+    /* Upload wiring */
+    $btnUpload.on('click', () => $uploadInput.click());
+    $uploadInput.on('change', function(){ const f = this.files[0]; if (!f) return; const target = (selectedPath && selectedIsDir) ? selectedPath : (selectedPath && !selectedIsDir ? parentDir(selectedPath) : '/'); uploadFileToDir(f, target); $(this).val(''); });
+
+    async function uploadFileToDir(file, dir, autoRetry = true){
+      dir = norm(dir || '/');
+      if (!file) return alert('No file selected');
+      if (file.size > MAX_UPLOAD_BYTES){
+        if (!confirm(`The selected file is ${(file.size / (1024*1024)).toFixed(1)} MB which may be large for this device. Continue?`)) return;
+      }
+      setBusy('Uploading ' + file.name + ' …');
+      $uploadProgress.show(); $uploadBar.css('width', '0%'); $statusLine.text('Uploading ' + file.name + ' …');
+      const fd = new FormData();
+      fd.append('dir', norm(dir));
+      fd.append('file', file);
+      fd.append('filename', file.name);
+      fd.append('overwrite', '1');
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', uploadEndpoint, true);
+      xhr.timeout = UPLOAD_TIMEOUT;
+      xhr.upload.onprogress = function(e){ if (e.lengthComputable){ const pct = Math.round(e.loaded / e.total * 100); $uploadBar.css('width', pct + '%'); $statusLine.text('Uploading ' + file.name + ' — ' + pct + '%'); } };
+      xhr.onload = async function(){
+        $uploadBar.css('width', '100%'); setTimeout(()=> $uploadProgress.hide(), 500);
+        if (xhr.status >= 200 && xhr.status < 300){
+          clearBusy('Uploaded');
+          $statusLine.text('Upload finished — requesting reindex and waiting for index update');
+          const newPath = joinPath(dir, file.name);
+          triggerReindex(dir);
+          pollForIndexAndRefresh(dir);
+          setTimeout(()=> reloadView('Uploaded "' + file.name + '"', newPath, dir), 700);
+        } else if (xhr.status === 409){
+          clearBusy('Upload conflict (409)');
+          const answer = confirm('A file with that name already exists. Overwrite? Click OK to overwrite, Cancel to abort.');
+          if (!answer) { $statusLine.text('Upload cancelled (conflict)'); return; }
+          if (!autoRetry) { alert('Upload conflict; cannot auto-retry.'); return; }
+          const fullpath = joinPath(dir, file.name);
+          setBusy('Removing existing file to overwrite...');
+          try {
+            await ajaxPost(deleteEndpoint, { filename: fullpath }, 20000);
+            clearBusy('Removed existing file; retrying upload');
+            await sleep(350);
+            uploadFileToDir(file, dir, false);
+          } catch (e){
+            clearBusy('Could not remove existing file');
+            alert('Could not remove existing file for overwrite: ' + (e.message || e));
+          }
+        } else {
+          clearBusy('Upload failed');
+          const body = xhr.responseText || xhr.statusText || '';
+          alert('Upload failed: ' + xhr.status + ' ' + body);
+          $statusLine.text('Upload failed');
+        }
+      };
+      xhr.onerror = function(){ $uploadProgress.hide(); clearBusy('Upload failed'); $statusLine.text('Upload failed (network)'); alert('Upload failed (network)'); };
+      xhr.ontimeout = function(){ $uploadProgress.hide(); clearBusy('Upload timed out'); $statusLine.text('Upload timed out'); alert('Upload timed out'); };
+      xhr.send(fd);
+    }
+
+    async function ajaxPost(url, bodyObj, timeoutMs = 15000){
+      if (bodyObj instanceof FormData){
+        return new Promise((resolve, reject) => {
+          $.ajax({ url, method: 'POST', data: bodyObj, processData: false, contentType: false, timeout: timeoutMs })
+          .done(res => resolve(res)).fail((xhr, status, err) => reject(new Error(xhr.responseText || (xhr.status + ' ' + err))));
+        });
+      } else {
+        const params = new URLSearchParams();
+        for (const k in bodyObj) params.append(k, bodyObj[k]);
+        return new Promise((resolve, reject) => {
+          $.ajax({ url, method: 'POST', data: params.toString(), contentType: 'application/x-www-form-urlencoded; charset=UTF-8', timeout: timeoutMs })
+          .done(res => resolve(res)).fail((xhr, status, err) => reject(new Error(xhr.responseText || (xhr.status + ' ' + err))));
+        });
+      }
+    }
+
+    async function pollForNewFile(path, filename, attempts = POLL_NEW_ATTEMPTS, delayMs = POLL_NEW_DELAY){
+      for (let i=0;i<attempts;i++){
+        try {
+          const idx = await fetchIndex(path);
+          const entries = idx.entries || [];
+          if (entries && entries.some(e => (String(e.n || '') === filename) || (String(e.p || '').endsWith('/'+filename)))) return true;
+        } catch(e){}
+        await sleep(delayMs);
+      }
+      return false;
+    }
+
+    async function pollForRemoval(path, filename, attempts = POLL_NEW_ATTEMPTS, delayMs = POLL_NEW_DELAY){
+      for (let i=0;i<attempts;i++){
+        try {
+          const idx = await fetchIndex(path);
+          const entries = idx.entries || [];
+          if (entries && !entries.some(e => (String(e.n || '') === filename) || (String(e.p || '').endsWith('/'+filename)))) return true;
+        } catch(e){}
+        await sleep(delayMs);
+      }
+      return false;
+    }
+
+    /* Actions: mkdir, rename, delete, edit */
+    $btnNewFolder.on('click', async function(){
+      const name = prompt('New folder name:', 'NewFolder'); if (!name) return;
+      const parent = (selectedPath && selectedIsDir) ? selectedPath : '/';
+      const path = joinPath(parent, name);
+      setBusy('Creating folder...');
+      try {
+        await ajaxPost(mkdirEndpoint, { dirname: path }, 15000);
+        $statusLine.text('Folder create requested — requesting reindex');
+        triggerReindex(parent);
+        pollForIndexAndRefresh(parent);
+        const found = await pollForNewFile(parent, name, 12, 700);
+        clearBusy(found ? 'Folder visible' : 'Folder created (stale index)');
+        reloadView(found ? 'Folder created' : 'Folder created (stale index)', null, parent);
+      } catch (e){
+        clearBusy('mkdir failed'); alert('mkdir failed: ' + (e.message || e)); $statusLine.text('mkdir failed');
+      }
+    });
+
+    $btnRename.on('click', async function(){
+      if (!selectedPath) return alert('Select an item first');
+      const base = basename(selectedPath);
+      const name = prompt('Rename to:', base); if (!name || name === base) return;
+      const oldp = selectedPath; const parent = parentDir(oldp); const newp = joinPath(parent, name);
+      setBusy('Renaming...');
+      try {
+        await ajaxPost(renameEndpoint, { oldname: oldp, newname: newp }, 20000);
+        // reindex relevant parent(s)
+        triggerReindex(parent);
+        pollForIndexAndRefresh(parent);
+        clearBusy('Rename requested');
+        setTimeout(()=> reloadView('Renamed', newp, parent), 900);
+      } catch (e){
+        clearBusy('Rename failed'); alert('Rename failed: ' + (e.message || e)); $statusLine.text('Rename failed');
+      }
+    });
+
+    $btnDelete.on('click', async function(){
+      if (!selectedPath) return alert('Select first');
+      if (!confirm('Delete "'+basename(selectedPath)+'"? This cannot be undone.')) return;
+      const parent = parentDir(selectedPath);
+      const filename = selectedPath;
+      setBusy('Deleting...');
+      try {
+        await ajaxPost(deleteEndpoint, { filename: selectedPath }, 20000);
+        triggerReindex(parent);
+        pollForIndexAndRefresh(parent);
+        const removed = await pollForRemoval(parent, basename(filename), 20, 700);
+        clearBusy(removed ? 'Deleted' : 'Deleted (stale index)');
+        reloadView(removed ? 'Deleted' : 'Deleted (stale index)', null, parent);
+      } catch (e){
+        clearBusy('Delete failed'); alert('Delete failed: ' + (e.message || e)); $statusLine.text('Delete failed');
+      }
+    });
+
+    $btnDownload.on('click', function(){ if (!selectedPath || selectedIsDir) return alert('Select a file to download'); downloadFile(selectedPath); });
+    $btnEdit.on('click', function(){ if (!selectedPath || selectedIsDir) return alert('Select a text file to edit'); openEditor(selectedPath); });
+
+    async function downloadFile(rel){
+      $statusLine.text('Downloading...');
+      try {
+        rel = norm(rel);
+        const a = document.createElement('a'); a.href = rel; a.download = basename(rel); document.body.appendChild(a); a.click(); a.remove();
+        $statusLine.text('Download started');
+      } catch (e){ alert('Download failed: ' + (e.message || '')); $statusLine.text('Download failed'); }
+    }
+
+    function openEditor(rel){
+      rel = norm(rel);
+      $editorTitle.text('Edit: ' + rel);
+      $editorArea.val('Loading...');
+      $editorModal.css('display','flex').attr('aria-hidden','false');
+      setBusy('Loading file...');
+      fetch(rel).then(async res => {
+        if (!res.ok) throw new Error('Failed to load: ' + res.status);
+        const txt = await res.text();
+        $editorArea.val(txt);
+        clearBusy('Loaded');
+      }).catch(e => { clearBusy('Could not load'); $editorArea.val('// Could not load: ' + (e.message||'')); });
+    }
+    $('#editor-cancel').on('click', ()=>{ $editorModal.hide().attr('aria-hidden','true'); });
+    $('#editor-download').on('click', ()=>{ const content = $editorArea.val(); const blob = new Blob([content], { type:'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = basename($editorTitle.text().replace(/^Edit:\s*/,'')); document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(a.href); });
+
+    $('#editor-save').on('click', async () => {
+      const title = $editorTitle.text().replace(/^Edit:\s*/, ''); const rel = norm(title);
+      if (!confirm('Save changes to ' + rel + '?')) return;
+      const content = $editorArea.val();
+      const parent = parentDir(rel);
+
+      // Use the upload endpoint (FormData + Blob) as the primary save method:
+      setBusy('Saving via upload (binary-safe)...');
+
+      const fd2 = new FormData();
+      fd2.append('file', new Blob([content], { type: 'text/plain; charset=UTF-8' }), basename(rel));
+      fd2.append('dir', parent);
+      fd2.append('filename', basename(rel));
+      fd2.append('overwrite', '1');
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', uploadEndpoint, true);
+      xhr.timeout = 120000;
+
+      xhr.upload.onprogress = function(e){
+        if (e.lengthComputable) {
+          const pct = Math.round(e.loaded / e.total * 100);
+          $uploadProgress.show();
+          $uploadBar.css('width', pct + '%');
+          $statusLine.text('Saving — ' + pct + '%');
+        }
+      };
+
+      xhr.onload = function(){
+        $uploadBar.css('width','100%'); setTimeout(()=> $uploadProgress.hide(),400);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          clearBusy('Saved');
+          $editorModal.hide().attr('aria-hidden','true');
+          triggerReindex(parent);
+          pollForIndexAndRefresh(parent);
+          setTimeout(()=> renderDirectory('/'), 400);
+        } else if (xhr.status === 409) {
+          clearBusy('Save conflict (409)');
+          const fullpath = rel;
+          setBusy('Removing existing file...');
+          $.ajax({ url: deleteEndpoint, method: 'POST', data: { filename: fullpath }, timeout: 12000 })
+            .done(()=> {
+              sleep(300).then(()=> {
+                clearBusy('Retrying save via upload');
+                uploadFileToDir(new File([content], basename(rel)), parent, false);
+                $editorModal.hide().attr('aria-hidden','true');
+              });
+            })
+            .fail(()=> { clearBusy('Could not remove existing file'); alert('Could not remove existing file for overwrite.'); });
+        } else {
+          clearBusy('Save failed');
+          const body = xhr.responseText || xhr.statusText || '';
+          alert('Save failed: ' + xhr.status + ' ' + body);
+        }
+      };
+
+      xhr.onerror = function(){ $uploadProgress.hide(); clearBusy('Save failed'); alert('Save failed (network)'); };
+      xhr.ontimeout = function(){ $uploadProgress.hide(); clearBusy('Save timed out'); alert('Save timed out'); };
+      xhr.send(fd2);
+    });
+
+
+    function openOrDownload(rel){ if (!rel) return; const ext = (rel.split('.').pop()||'').toLowerCase(); if (/^(mp4|webm|mkv|mp3|wav|jpg|jpeg|png|gif|webp|pdf)$/.test(ext)) { window.open(rel, '_blank'); return; } downloadFile(rel); }
+
+    /* Reindex / cache management */
+    function clearIndexCacheForPath(path){
+      path = norm(path || '/');
+      const keys = Array.from(indexCache.keys());
+      for (const k of keys){
+        if (k === path || k.startsWith(path + '/') || path.startsWith(k + '/')) indexCache.delete(k);
+      }
+    }
+
+    function triggerReindex(path){
+      path = norm(path || '/');
+      clearIndexCacheForPath(path);
+      try { fetch(reindexEndpoint, { method: 'POST', body: new URLSearchParams({ path: path }) }).catch(()=>{}); } catch(e){}
+    }
+
+    async function pollForIndexAndRefresh(path, attempts = 20, delayMs = 700){
+      path = norm(path || '/');
+      for (let i=0;i<attempts;i++){
+        try {
+          const idx = await fetchIndexDirect(path);
+          const entries = idx && idx.entries ? idx.entries : [];
+          if (entries.length > 0 || i === attempts - 1){
+            clearIndexCacheForPath(path);
+            reloadView('Index updated', null, path);
+            return;
+          }
+        } catch(e){}
+        await sleep(delayMs);
+      }
+      reloadView('Index refresh (fallback)', null, path);
+    }
+
+    /* Shortcuts + utilities */
+    document.querySelectorAll('.shortcut').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const p = btn.getAttribute('data-path') || '/';
+        const np = norm(p);
+        if (np === '/') { goToRoot(); return; }
+        showDirectoryOnly(np);
+      });
+    });
+    document.getElementById('btn-refresh').addEventListener('click', () => { clearIndexCacheForPath('/'); reloadView('Refreshed'); });
+    document.getElementById('btn-clear-cache').addEventListener('click', () => { indexCache.clear(); $statusLine.text('Client cache cleared'); });
+
+    /* Boot */
+    (function init(){
+      renderDirectory('/');
+      initDragDrop();
+      document.addEventListener('keydown', function(e){ if (e.key === 'Escape') { $editorModal.hide().attr('aria-hidden','true'); } });
+      $btnBack.on('click', goBackOne);
+
+      // expose debug helpers
+      window.nomadFB = {
+        triggerReindex: (p) => { triggerReindex(p); pollForIndexAndRefresh(p); },
+        renderDirectory,
+        goToRoot,
+        setMaxUploadBytes: v => { MAX_UPLOAD_BYTES = v; },
+        clearIndexCacheForPath
+      };
+    })();
+
+  })();
+  </script>
+</body>
+</html>

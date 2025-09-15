@@ -1,61 +1,107 @@
 <!DOCTYPE html>
-<!--  Nomad Shows Page  -->
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1.0">
-  <meta name="description" content="Jcorp Nomad Media Server – Shows">
-  <title>Nomad • Shows</title>
-  <link rel="icon" href="favicon.ico" type="image/x-icon">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Nomad • Shows</title>
+<style>
+  :root{
+    --primary:#007bff; --primary-dark:#0056b3; --bg:#f4f4f9; --text:#333; --muted:#6b7280;
+    --radius:10px; --shadow:0 8px 24px rgba(0,0,0,0.08);
+    --card-gap:1rem;
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column;min-height:100vh}
+  header{background:var(--primary);color:#fff;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:60;box-shadow:var(--shadow)}
+  header h1{font-size:clamp(1.15rem,4vw,1.5rem);margin:0;font-weight:700}
+  .back-btn{text-decoration:none;color:#fff;background:var(--primary-dark);padding:.45rem .7rem;border-radius:8px;font-size:0.95rem;display:inline-block}
 
-  <style>
-    :root{--primary:#007bff;--primary-dark:#0056b3;--bg:#f4f4f9;--text:#333;--radius:8px;--shadow:0 4px 12px rgba(0,0,0,0.08);} 
-    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-    body{font-family:Arial,sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column;min-height:100vh;}
-    header{background:var(--primary);color:#fff;padding:1.25rem 1rem;display:flex;align-items:center;justify-content:space-between;box-shadow:var(--shadow);position:sticky;top:0;z-index:50;}
-    header h1{font-size:clamp(1.25rem,5vw,1.75rem);font-weight:600;white-space:nowrap;}
-    .back-btn{text-decoration:none;color:#fff;background:var(--primary-dark);padding:.5rem .75rem;border-radius:var(--radius);font-size:0.9rem;white-space:nowrap;}
+  .toolbar{background:var(--bg);padding:.65rem 1rem;display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;border-bottom:1px solid #e6e9ef;position:sticky;top:68px;z-index:55;}
+  .toolbar input[type="search"]{flex:1 1 220px;padding:.5rem .75rem;border:1px solid #d6d9e6;border-radius:8px;font-size:0.95rem;background:#fff}
+  .toolbar select, .toolbar .view-btn{padding:.48rem .7rem;border:1px solid #d6d9e6;background:#fff;border-radius:8px;font-size:0.9rem;cursor:pointer}
+  .view-btn.active{background:var(--primary);color:#fff;border-color:var(--primary-dark);}
 
-    .toolbar{background:var(--bg);padding:.75rem 1rem;display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;border-bottom:1px solid #ddd;position:sticky;top:64px;z-index:45;}
-    .toolbar input[type="search"],.toolbar select{padding:.5rem .75rem;border:1px solid #ccc;border-radius:var(--radius);font-size:0.95rem;}
-    .toolbar input[type="search"]{flex:1 1 200px;}
-    .view-btn{padding:.5rem .75rem;border:1px solid #ccc;background:#fff;border-radius:var(--radius);font-size:0.9rem;cursor:pointer;}
-    .view-btn.active{background:var(--primary);color:#fff;border-color:var(--primary-dark);}  
+  main{flex:1;display:flex;flex-direction:column;max-width:1200px;width:100%;margin:0 auto;padding:1rem}
+  .grid-wrapper{flex:1;overflow-y:auto;padding-bottom:12px}
+  .media-grid{display:grid;gap:var(--card-gap);}
+  .media-grid.small  {grid-template-columns:repeat(auto-fit,minmax(120px,1fr));}
+  .media-grid.medium{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
+  .media-grid.large {grid-template-columns:repeat(auto-fit,minmax(220px,1fr));}
 
-    main{flex:1;display:flex;flex-direction:column;max-width:1200px;width:100%;margin:0 auto;}
-    .grid-wrapper{flex:1;overflow-y:auto;padding:1rem;}
-    .media-grid{display:grid;gap:1rem;}
-    .media-grid.small {grid-template-columns:repeat(auto-fit,minmax(120px,1fr));}
-    .media-grid.medium{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
-    .media-grid.large {grid-template-columns:repeat(auto-fit,minmax(220px,1fr));}
+  @media (max-width:600px){
+    header{flex-direction:column;gap:.5rem;align-items:stretch;}
+    .back-btn{width:100%;text-align:center;}
+    .toolbar{top:112px;}
+    .media-grid.small  {grid-template-columns:repeat(2,1fr);}
+    .media-grid.medium {grid-template-columns:repeat(3,1fr);}
+    .media-grid.large  {grid-template-columns:repeat(4,1fr);}
+  }
 
-    @media(max-width:600px){
-      header{flex-direction:column;gap:.5rem;}
-      .back-btn{width:100%;text-align:center;}
-      .toolbar{top:112px;}
-      .media-grid.small{grid-template-columns:repeat(2,1fr);}
-      .media-grid.medium{grid-template-columns:repeat(3,1fr);}
-      .media-grid.large{grid-template-columns:repeat(4,1fr);}
-    }
+  /* cards */
+  .media-card{background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;transition:transform .22s ease, box-shadow .22s ease;cursor:pointer;width:100%;max-width:220px;margin:0 auto;position:relative;will-change:transform,opacity;}
+  .media-grid.small  .media-card{max-width:120px;}
+  .media-grid.medium .media-card{max-width:160px;}
+  .media-grid.large  .media-card{max-width:220px;}
+  .media-card:hover{transform:translateY(-4px);box-shadow:0 12px 30px rgba(0,0,0,0.10);}
 
-    .media-card{background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;transition:transform .25s ease;cursor:pointer;width:100%;max-width:220px;margin:0 auto;}
-    .media-grid.small  .media-card{max-width:120px;}
-    .media-grid.medium .media-card{max-width:160px;}
-    .media-grid.large  .media-card{max-width:220px;}
-    .media-card:hover{transform:translateY(-3px);}  
-    .media-thumb{width:100%;aspect-ratio:2/3;object-fit:cover;}
-    
-    .modal,.episode-modal,.video-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);justify-content:center;align-items:center;z-index:1000;}
-    .modal-content,.episode-modal-content,.video-modal-content{background:#fff;padding:20px;border-radius:10px;text-align:center;width:90%;max-width:600px;box-shadow:0 6px 20px rgba(0,0,0,0.1);}  
-    .modal button,.episode-modal button,.video-modal button{padding:12px;font-size:1em;margin:10px 0;background:var(--primary);color:#fff;border:none;border-radius:5px;cursor:pointer;width:100%;transition:background .2s;}
-    .modal button:hover,.episode-modal button:hover,.video-modal button:hover{background:var(--primary-dark);}  
-    .episode-list{max-height:400px;overflow-y:auto;text-align:left;}
-    .episode-list button{width:100%;margin:5px 0;padding:10px;font-size:1em;}
+  .thumb-wrapper{position:relative;display:flex;align-items:center;justify-content:center;background:#efeff5;color:#555;font-size:0.9rem;text-align:center;width:100%;aspect-ratio:2/3;overflow:hidden;}
+  .fallback-text{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:2;text-align:center;font-weight:700;color:#06306f;pointer-events:none;padding:6px}
+  .media-thumb{display:block;width:100%;height:100%;object-fit:cover;position:absolute;top:0;left:0;z-index:1;opacity:0;transition:opacity .35s ease;}
+  .badge-resume{position:absolute;left:50%;transform:translateX(-50%);bottom:8px;background:rgba(0,0,0,0.6);color:#fff;padding:6px 10px;border-radius:999px;font-weight:700;font-size:12px;z-index:4;display:block;min-width:40px;max-width:85%;overflow:hidden}
+  .marquee{display:block;white-space:nowrap;overflow:hidden;position:relative;height:18px}
+  .m-inner{display:inline-block;white-space:nowrap}
+  .m-inner span{display:inline-block;padding-right:40px}
 
-    .video-container{display:flex;flex-direction:column;align-items:center;gap:1rem;}
-    video{width:100%;max-width:800px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,0.2);}  
-    #nextBtn{margin-top:.5rem;}
-  </style>
+  .card-body{display:none}
+
+  /* modals */
+  .modal,.episode-modal,.video-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);justify-content:center;align-items:center;z-index:1000;padding:20px;}
+  /* fixed modal size: we lock modal max height so video won't push it beyond viewport */
+  .modal-content,.episode-modal-content{background:#fff;padding:18px;border-radius:12px;text-align:center;width:94%;max-width:980px;box-shadow:0 12px 44px rgba(0,0,0,0.12);max-height:90vh;overflow:auto}
+  .video-modal-content{
+    background:#111;
+    padding:18px;
+    border-radius:12px;
+    width:95%;
+    max-width:980px;
+    box-shadow:0 16px 60px rgba(0,0,0,0.28);
+    max-height:80vh;           /* lock modal height */
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:12px;
+    overflow:hidden;
+  }
+
+  .modal button,.episode-modal button,.video-modal button{padding:10px 12px;font-size:0.98rem;border-radius:8px;border:0;cursor:pointer}
+  .modal button:not(.cancel):not(.secondary){background:var(--primary);color:#fff;width:100%}
+  .modal button.secondary{background:#f6f9ff;color:var(--primary);border:1px solid rgba(0,123,255,0.12);width:100%}
+  .modal button.cancel{background:#fff;color:#333;border:1px solid #e6e9ef;width:100%}
+  .episode-list{max-height:60vh;overflow-y:auto;text-align:left;padding:6px}
+  .episode-list .ep-row{display:flex;align-items:center;gap:6px;padding:6px;border-bottom:1px solid #f4f4f9}
+  .episode-list .ep-row button{flex:1;background:var(--primary);border:0;color:#fff;text-align:center;padding:8px;border-radius:8px;cursor:pointer;font-weight:700;font-size:0.95rem}
+  .season-toggle{display:flex;align-items:center;justify-content:space-between;padding:8px;background:var(--primary);color:#fff;border-radius:8px;margin:6px 0;cursor:pointer;font-weight:700}
+  .season-content{padding-left:6px;padding-right:6px;margin-bottom:6px}
+
+  .video-container{display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;padding:6px;box-sizing:border-box}
+  /* Video sizing: limit height so modal won't expand; allow width to be up to container but keep aspect ratio via height auto */
+  .video-container video{ width:100%; height:auto; max-height: calc(80vh - 140px); object-fit:contain; border-radius:8px; background:#000; display:block; }
+  .video-title{font-weight:700;color:#fff;margin-bottom:6px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%}
+  .video-actions{display:flex;gap:8px;width:100%;max-width:420px;margin-top:8px}
+  .video-actions button{flex:1;padding:10px;border-radius:8px;border:0;cursor:pointer}
+  .video-actions .cancel{background:#fff;border:1px solid #e6e9ef;color:#333}
+  .video-actions #videoNextBtn{background:var(--primary);color:#fff}
+
+  footer{padding:10px;text-align:center;color:#666;font-size:0.95rem}
+
+/* marquee keyframes */
+@keyframes scroll { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+
+/* entrance animation */
+.media-card.play-anim { animation-name:cardIn; animation-duration:360ms; animation-timing-function:cubic-bezier(.2,.9,.2,1); animation-fill-mode:both; }
+@keyframes cardIn { from { opacity:0; transform:translateX(-18px) scale(.994); } to { opacity:1; transform:translateX(0) scale(1); } }
+</style>
 </head>
 <body>
   <header>
@@ -63,227 +109,1210 @@
     <a class="back-btn" href="http://192.168.4.1/menu">← Back to Menu</a>
   </header>
 
-  <div class="toolbar">
+  <div class="toolbar" role="region" aria-label="toolbar">
     <input id="searchInput" type="search" placeholder="Search shows…" aria-label="Search shows">
     <select id="sortSelect" aria-label="Sort shows">
       <option value="nameAsc">A → Z</option>
       <option value="nameDesc">Z → A</option>
     </select>
-    <button class="view-btn" data-size="small">🔳</button>
-    <button class="view-btn active" data-size="medium">🔲</button>
-    <button class="view-btn" data-size="large">⬜</button>
+    <button class="view-btn" data-size="small" title="Compact view" aria-pressed="false">🔳</button>
+    <button class="view-btn active" data-size="medium" title="Comfort view" aria-pressed="true">🔲</button>
+    <button class="view-btn" data-size="large" title="Gallery view" aria-pressed="false">⬜</button>
   </div>
 
   <main>
     <div class="grid-wrapper">
-      <div id="grid" class="media-grid medium"></div>
+      <div id="grid" class="media-grid medium" aria-live="polite" aria-label="Show list"></div>
     </div>
   </main>
 
-  <div id="episodeModal" class="episode-modal">
-    <div class="episode-modal-content">
-      <h2>Select an Episode</h2>
+  <div id="episodeModal" class="episode-modal" role="dialog" aria-modal="true">
+    <div class="episode-modal-content" role="document">
+      <h2 id="episodeModalTitle">Select an episode</h2>
+      <div id="episodeResumeBanner" style="display:none;margin-bottom:8px"></div>
       <div id="episodeList" class="episode-list"></div>
-      <button onclick="closeEpisodeModal()">Close</button>
+      <div style="margin-top:10px"><button id="episodeCloseBtn" class="cancel">Close</button></div>
     </div>
   </div>
 
-  <div id="modal" class="modal" onclick="closeModal(event)">
-    <div class="modal-content" onclick="event.stopPropagation();">
-      <h2>What would you like to do?</h2>
-      <button id="viewButton">Watch</button>
-      <button id="downloadButton">Download</button>
+  <div id="actionModal" class="modal" role="dialog" aria-modal="true">
+    <div class="modal-content" role="document">
+      <h2 id="actionTitle">Play / Download</h2>
+      <div id="actionSub" style="margin-bottom:8px;color:#444"></div>
+      <button id="playButton">Play (from start)</button>
+      <button id="downloadButton" class="cancel">Download</button>
+      <div style="margin-top:8px"><button id="actionCloseBtn" class="cancel">Cancel</button></div>
     </div>
   </div>
 
-  <div id="videoModal" class="video-modal">
-    <div class="video-modal-content">
+  <div id="videoModal" class="video-modal" role="dialog" aria-modal="true">
+    <div class="video-modal-content" role="document">
       <div class="video-container">
-        <video id="videoPlayer" controls preload="metadata"></video>
-        <button id="nextBtn">Next Episode ▶</button>
-        <button onclick="closeVideo()">Close</button>
+        <div id="videoTitle" class="video-title"></div>
+        <video id="videoPlayer" controls playsinline aria-label="Video player"></video>
+        <div class="video-actions">
+          <button id="videoCloseBtn" class="cancel">Close</button>
+          <button id="videoNextBtn">Next</button>
+        </div>
       </div>
     </div>
   </div>
 
-  <footer>© <span id="year"></span> Jcorp Nomad</footer>
+  <footer>© <span id="year"></span> Jcorp Nomad</footer>
 
-  <script>
-    document.getElementById('year').textContent = new Date().getFullYear();
+<script>
+/* Basic setup */
+document.getElementById('year').textContent = new Date().getFullYear();
 
-    const videoFormats = ['.mp4','.mkv','.avi','.mov','.webm'];
-    let shows = [], filtered = [], flattened = [], currentIdx = 0;
+const ROOT_PATH = '/Shows';
+const INDEX_ENDPOINT = '/api/index';
+const MEDIA_ENDPOINT = '/media';
 
-    const grid          = document.getElementById('grid');
-    const searchInput   = document.getElementById('searchInput');
-    const sortSelect    = document.getElementById('sortSelect');
-    const viewBtns      = [...document.querySelectorAll('.view-btn')];
-    const episodeModal  = document.getElementById('episodeModal');
-    const episodeList   = document.getElementById('episodeList');
-    const actionModal   = document.getElementById('modal');
-    const videoModal    = document.getElementById('videoModal');
-    const videoPlayer   = document.getElementById('videoPlayer');
-    const nextBtn       = document.getElementById('nextBtn');
+/* shared resume store (same as movies) */
+const RESUME_KEY = 'nomad:watch:v1';
+const ANIM_KEY_BASE = 'nomad:shows:anim:v1';
 
-    let curSize = localStorage.getItem('nomadShowsSize') || 'medium';
-    function setViewSize(sz) {
-      curSize = sz;
-      viewBtns.forEach(b => b.classList.toggle('active', b.dataset.size === sz));
-      grid.className = `media-grid ${sz}`;
-      localStorage.setItem('nomadShowsSize', sz);
-    }
-    viewBtns.forEach(b => b.addEventListener('click', () => setViewSize(b.dataset.size)));
-    setViewSize(curSize);
+const VIDEO_EXTS = ['.mp4','.mkv','.avi','.mov','.webm','.m4v'];
+const IMAGE_EXTS = ['.jpg','.jpeg','.png','.webp','.avif'];
+const SUB_EXTS = ['.srt','.vtt','.ass','.ssa','.sub'];
 
-    function isVideo(f) {
-      return videoFormats.some(ext => f.toLowerCase().endsWith(ext));
-    }
-    function mediaUrl(fp) {
-      return `/media?file=${encodeURIComponent('/' + fp)}`;
-    }
-    function downloadUrl(fp) {
-      return `/media.json?file=${encodeURIComponent('/' + fp)}`;
-    }
-    function flattenShow(s) {
-      if (s.episodes) return s.episodes;
-      return s.seasons?.flatMap(se => se.episodes || []) || [];
+/* ---------------- THEME: respect menu-controlled dark mode (no button) ---------------- */
+const THEME_KEY = 'nomad_dark_mode';
+
+function applyThemeFlag(dark){
+  try {
+    dark = !!dark;
+    // class hook for any existing CSS relying on .dark
+    document.body.classList.toggle('dark', dark);
+
+    // update root CSS variables for broad styles
+    const root = document.documentElement.style;
+    if(dark){
+      root.setProperty('--bg', '#0b1116');
+      root.setProperty('--text', '#e6eef8');
+      root.setProperty('--muted', '#9aa6b3');
+    } else {
+      root.setProperty('--bg', '#f4f4f9');
+      root.setProperty('--text', '#333');
+      root.setProperty('--muted', '#6b7280');
     }
 
-    fetch('/media.json')
-      .then(r => r.json())
-      .then(data => { shows = data.shows || []; applyFilter(''); })
-      .catch(_ => {
-        grid.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--primary-dark);">Unable to load content.</p>';
-      });
+    // Keep search readable per menu behavior (but respect dark if desired)
+    const searchEl = document.querySelector('.toolbar input[type="search"], #searchInput');
+    if(searchEl){
+      // keep highly readable for the menu UI; switching to dark-friendly values when dark
+      if(dark){
+        searchEl.style.background = '#071421';
+        searchEl.style.color = '#eaf6ff';
+        searchEl.style.borderColor = 'rgba(255,255,255,0.04)';
+      } else {
+        searchEl.style.background = '#fff';
+        searchEl.style.color = '#000';
+        searchEl.style.borderColor = '#d6d9e6';
+      }
+    }
 
-    let debounce;
-    function applyFilter(q) {
-      const term = q.trim().toLowerCase();
-      filtered = !term ? [...shows] : shows.filter(s => s.name.toLowerCase().includes(term));
-      applySort(sortSelect.value);
+    // Header and toolbar surfaces
+    const header = document.querySelector('header');
+    if(header) header.style.background = dark ? '#07142a' : 'var(--primary)';
+    const toolbar = document.querySelector('.toolbar');
+    if(toolbar){
+      toolbar.style.background = dark ? '#0d1722' : 'var(--bg)';
+      toolbar.style.borderBottomColor = dark ? 'rgba(255,255,255,0.04)' : '#e6e9ef';
     }
-    function applySort(mode) {
-      filtered.sort((a, b) =>
-        mode === 'nameDesc'
-          ? b.name.localeCompare(a.name)
-          : a.name.localeCompare(b.name)
-      );
-      renderGrid();
-    }
-    searchInput.addEventListener('input', e => {
-      clearTimeout(debounce);
-      debounce = setTimeout(() => applyFilter(e.target.value), 150);
+
+    // Cards / thumbs / fallback text
+    document.querySelectorAll('.media-card').forEach(c => {
+      c.style.background = dark ? '#071421' : '#fff';
+      c.style.boxShadow = dark ? '0 8px 24px rgba(0,0,0,0.45)' : 'var(--shadow)';
     });
-    sortSelect.addEventListener('change', () => applySort(sortSelect.value));
+    document.querySelectorAll('.thumb-wrapper').forEach(t => {
+      t.style.background = dark ? '#08121a' : '#efeff5';
+    });
+    document.querySelectorAll('.fallback-text').forEach(f => {
+      f.style.color = dark ? '#eaf6ff' : '#06306f';
+    });
+    document.querySelectorAll('.media-thumb').forEach(img => {
+      // subtle outline in light mode, none in dark
+      img.style.outline = dark ? 'none' : '1px solid rgba(0,0,0,0.04)';
+    });
 
-    function renderGrid() {
-      grid.className = `media-grid ${curSize}`;
-      const f = document.createDocumentFragment();
-      if (!filtered.length) {
-        grid.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--primary-dark);">No shows found.</p>';
-        return;
+    // Resume badges
+    document.querySelectorAll('.badge-resume').forEach(b => {
+      b.style.background = dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.6)';
+      b.style.color = '#fff';
+    });
+
+    // Modal content backgrounds & text
+    document.querySelectorAll('.modal-content, .episode-modal-content, .video-modal-content').forEach(el => {
+      if(dark){
+        el.style.background = '#071722';
+        el.style.color = '#eaf6ff';
+        el.style.border = '1px solid rgba(255,255,255,0.04)';
+        el.style.boxShadow = '0 12px 44px rgba(0,0,0,0.5)';
+      } else {
+        el.style.background = '#fff';
+        el.style.color = '#111';
+        el.style.border = '0';
+        el.style.boxShadow = '0 12px 44px rgba(0,0,0,0.12)';
       }
-      filtered.forEach(s => {
-        const c = document.createElement('div');
-        c.className = 'media-card';
-        c.innerHTML = `<img class="media-thumb" loading="lazy" src="${s.cover||'placeholder.jpg'}" alt="${s.name}">`;
-        c.onclick = () => openEpisodeModal(s);
-        f.appendChild(c);
-      });
-      grid.innerHTML = '';
-      grid.appendChild(f);
+    });
+
+    // Episode list and rows (fix white background in dark mode)
+    document.querySelectorAll('.episode-list').forEach(el => {
+      if(dark){
+        el.style.background = '#071722';
+        el.style.color = '#eaf6ff';
+        el.style.borderRadius = '8px';
+        el.style.border = '1px solid rgba(255,255,255,0.03)';
+      } else {
+        el.style.background = '';
+        el.style.color = '';
+        el.style.borderRadius = '';
+        el.style.border = '';
+      }
+    });
+    document.querySelectorAll('.episode-list .ep-row').forEach(r => {
+      r.style.background = 'transparent';
+      r.style.borderBottom = dark ? '1px solid rgba(255,255,255,0.04)' : '1px solid #f4f4f9';
+    });
+    document.querySelectorAll('.episode-list .ep-row button').forEach(b => {
+      if(dark){
+        b.style.background = '#06202b';
+        b.style.color = '#eaf6ff';
+        b.style.border = '1px solid rgba(255,255,255,0.04)';
+      } else {
+        b.style.background = 'var(--primary)';
+        b.style.color = '#fff';
+        b.style.border = '0';
+      }
+    });
+
+    // Buttons in modals: cancel/secondary
+    document.querySelectorAll('.modal button.cancel, .episode-modal button.cancel, .video-modal button.cancel').forEach(b => {
+      if(dark){
+        b.style.background = '#0b1220';
+        b.style.color = '#eaf6ff';
+        b.style.border = '1px solid rgba(255,255,255,0.06)';
+      } else {
+        b.style.background = '#fff';
+        b.style.color = '#333';
+        b.style.border = '1px solid #e6e9ef';
+      }
+    });
+
+    document.querySelectorAll('.modal button.secondary').forEach(b => {
+      if(dark){
+        b.style.background = '#0f2340';
+        b.style.color = '#a9d3ff';
+        b.style.border = '1px solid rgba(255,255,255,0.06)';
+      } else {
+        b.style.background = '#f6f9ff';
+        b.style.color = 'var(--primary)';
+        b.style.border = '1px solid rgba(0,123,255,0.12)';
+      }
+    });
+
+    // Video player and title
+    const videoEl = document.getElementById('videoPlayer');
+    if(videoEl){
+      videoEl.style.background = dark ? '#000' : '#fff';
+      videoEl.style.outline = dark ? 'none' : '1px solid rgba(0,0,0,0.06)';
+    }
+    const videoTitleEl = document.getElementById('videoTitle');
+    if(videoTitleEl) videoTitleEl.style.color = dark ? '#fff' : 'var(--text, #111)';
+
+    // Resume banner styling
+    const resumeBanner = document.getElementById('episodeResumeBanner');
+    if(resumeBanner){
+      resumeBanner.style.background = dark ? 'transparent' : 'transparent';
+      resumeBanner.style.color = dark ? '#eaf6ff' : '#111';
     }
 
-    function openEpisodeModal(show) {
-      flattened = flattenShow(show).filter(ep => isVideo(ep.file));
-      episodeList.innerHTML = '';
-      flattened.forEach((ep, i) => {
-        const btn = document.createElement('button');
-        btn.textContent = ep.name || `Episode ${i+1}`;
-        btn.onclick = () => openActionModal(i);
-        episodeList.appendChild(btn);
-      });
-      episodeModal.style.display = 'flex';
-    }
-    function closeEpisodeModal() {
-      episodeModal.style.display = 'none';
-    }
+    // Footer color
+    const footer = document.querySelector('footer');
+    if(footer) footer.style.color = dark ? '#9fb0c6' : '#666';
+  } catch(e){
+    console.warn('applyThemeFlag error', e);
+  }
+}
 
-    function openActionModal(i) {
-      currentIdx = i;
-      actionModal.style.display = 'flex';
-      document.getElementById('viewButton').onclick = () => {
-        playEpisode(i);
-        actionModal.style.display = 'none';
-      };
-      document.getElementById('downloadButton').onclick = () => {
-        const link = document.createElement('a');
-        link.href = downloadUrl(flattened[i].file);
-        link.download = flattened[i].name || `Episode${i+1}`;
-        link.click();
-        actionModal.style.display = 'none';
-      };
-    }
-    function closeModal(e) {
-      if (e.target === actionModal) actionModal.style.display = 'none';
-    }
+// bootstrap from storage (menu controls this key)
+try {
+  const stored = localStorage.getItem(THEME_KEY);
+  applyThemeFlag(stored === 'true');
+} catch(e){
+  applyThemeFlag(false);
+}
 
-    const MAX_RETRIES = 2;
-    const STALL_DELAY = 8000;
-    let retryCount = 0, stallTimer = null, lastSrc = null;
+// sync across tabs when menu toggles theme
+window.addEventListener('storage', (ev) => {
+  if(ev.key === THEME_KEY){
+    applyThemeFlag(ev.newValue === 'true');
+  }
+});
 
-    function startStallWatcher(p, src) {
-      clearTimeout(stallTimer);
-      retryCount = 0;
-      lastSrc    = src;
+// Re-apply theme when grid children are replaced/added (so newly created cards get inline styles)
+(function attachGridObserver(){
+  try {
+    const gridNode = document.getElementById('grid');
+    if(!gridNode) return;
+    const obs = new MutationObserver(() => {
+      applyThemeFlag(localStorage.getItem(THEME_KEY) === 'true');
+    });
+    obs.observe(gridNode, { childList: true, subtree: true });
+  } catch(e){
+    // ignore
+  }
+})();
 
-      function schedule() {
-        clearTimeout(stallTimer);
-        stallTimer = setTimeout(() => {
-          if (!p.paused && p.readyState < 3 && retryCount < MAX_RETRIES) {
-            retryCount++;
-            console.log(`[Nomad] Stall → retry #${retryCount}`);
-            p.src = `${lastSrc}${lastSrc.includes('?')?'&':'?'}_=${Date.now()}`;
-            p.load();
-            p.currentTime = p.currentTime;
-            p.play().catch(()=>{});
-            schedule();
+
+
+/* State */
+let shows = [];
+let filtered = [];
+let currentSize = localStorage.getItem('nomadShowsSize') || 'medium';
+let currentShow = null;
+let flattenedEpisodes = [];   // copy of show.episodes for currently open show
+let pathIndexMap = {};        // normalized path -> index
+let currentEpisode = null;
+let currentEpisodeIndex = -1;
+let autosaveTimer = null;
+let rootSig = null;
+
+/* Helpers */
+function normalizePath(p){ if(!p) return '/'; p = String(p); if(!p.startsWith('/')) p='/' + p; while(p.length>1 && p.endsWith('/')) p=p.slice(0,-1); return p; }
+function ext(name){ const i=name.lastIndexOf('.'); return i>=0? name.slice(i).toLowerCase() : ''; }
+function isVideoName(n){ return VIDEO_EXTS.includes(ext(n)); }
+function isImageName(n){ return IMAGE_EXTS.includes(ext(n)); }
+function fileUrl(path){ const p = normalizePath(path); return isVideoName(p) ? `${MEDIA_ENDPOINT}?file=${encodeURIComponent(p)}` : encodeURI(p); }
+function formatTime(sec){ if(!sec||!isFinite(sec)) return '0:00'; sec=Math.floor(sec); const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60; if(h) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; return `${m}:${String(s).padStart(2,'0')}`; }
+function prettify(filename){ const n = filename.replace(/\.[^/.]+$/,''); let t = n.replace(/[_\.]+/g,' ').trim(); t = t.replace(/\s*\(?\d{4}\)?\s*$/,'').trim(); return t || filename; }
+
+/* Resume store helpers (fileKey like movies) */
+function readResume(){ try{ return JSON.parse(localStorage.getItem(RESUME_KEY)||'{}'); }catch(e){ return {}; } }
+function writeResume(v){ try{ localStorage.setItem(RESUME_KEY, JSON.stringify(v)); }catch(e){ /* ignore */ } }
+function fileKey(path, sz=0, mt=0){ return `${normalizePath(path)}|${sz||0}|${mt||0}`; }
+
+/* Save a single resume entry and (optionally) purge other non-completed resumes for the same show */
+function saveResumeEntryByKey(key, entry, purgeOtherNonCompleted = true){
+  try{
+    const store = readResume();
+
+    // If this exact entry was already marked completed, don't overwrite it
+    if(store[key] && store[key].completed) return;
+
+    if(purgeOtherNonCompleted){
+      const pathOnly = (key.split('|')[0] || '');
+      const showDir = findShowDirForEpisodePath(pathOnly);
+      if(showDir){
+        const normShow = normalizePath(showDir);
+        for(const k of Object.keys(store)){
+          const p = (k.split('|')[0] || '');
+          if(!p) continue;
+          const normP = normalizePath(p);
+          // skip the current key
+          if(k === key) continue;
+          // if entry is under the same show dir and is not completed, remove it
+          if(normP === normShow || normP.startsWith(normShow + '/')){
+            if(store[k] && store[k].completed) continue;
+            delete store[k];
           }
-        }, STALL_DELAY);
+        }
+      }
+    }
+
+    // set the new/updated entry and persist
+    store[key] = entry;
+    writeResume(store);
+  }catch(e){
+    console.warn('saveResumeEntryByKey failed', e);
+  }
+}
+
+/* tolerant matching for resume (exact fileKey -> path-only -> basename) */
+function findResumeForPath(episodeOrPath){
+  const store = readResume();
+  const norm = normalizePath(typeof episodeOrPath === 'string' ? episodeOrPath : (episodeOrPath.path || ''));
+  const size = episodeOrPath && episodeOrPath.sz ? (episodeOrPath.sz) : 0;
+  const mt = episodeOrPath && episodeOrPath.mt ? (episodeOrPath.mt) : 0;
+  const exact = fileKey(norm, size, mt);
+  if(store[exact]) return { key: exact, entry: store[exact] };
+
+  for(const k of Object.keys(store)){
+    const p = (k.split('|')[0] || '');
+    if(normalizePath(p) === norm) return { key: k, entry: store[k] };
+  }
+  for(const k of Object.keys(store)){
+    const p = (k.split('|')[0] || '').replace(/^\//,'');
+    if(p === norm.replace(/^\//,'')) return { key: k, entry: store[k] };
+  }
+  const base = norm.split('/').pop().toLowerCase();
+  for(const k of Object.keys(store)){
+    const p = (k.split('|')[0] || '').toLowerCase();
+    if(p.split('/').pop() === base) return { key: k, entry: store[k] };
+  }
+  return null;
+}
+// --- Helpers to update a single show's badge without re-rendering the whole grid ---
+function findShowDirForEpisodePath(path){
+  if(!path) return null;
+  const norm = normalizePath(path);
+  for(const s of shows){
+    if(!s || !s.dir) continue;
+    const sd = normalizePath(s.dir);
+    // match if episode path starts with show dir (add trailing slash to avoid partial matches)
+    if(norm === sd || norm.startsWith(sd + '/')) return sd;
+  }
+  return null;
+}
+
+function updateShowBadge(showDir){
+  try {
+    if(!showDir) return;
+    const normDir = normalizePath(showDir);
+    // find the card element for this show
+    const card = Array.from(gridEl.querySelectorAll('.media-card')).find(c => normalizePath(c.dataset.dir || '') === normDir);
+    if(!card) return;
+
+    // find thumb wrapper
+    const thumb = card.querySelector('.thumb-wrapper');
+    if(!thumb) return;
+
+    // remove existing marquee/resume badges (we'll re-create)
+    const existing = thumb.querySelectorAll('.badge-resume, .marquee');
+    existing.forEach(n => n.remove());
+
+    // find the show object
+    const show = shows.find(s => normalizePath(s.dir) === normDir);
+    if(!show) return;
+
+    // If fully completed, show Completed marquee
+    if(show._loaded && isShowFullyCompleted(show)){
+      thumb.appendChild(createMarqueeElement('Completed'));
+      return;
+    }
+
+    // Otherwise show most recent resume if available
+    const showResume = findResumeForShowDir(show.dir);
+    if(showResume && showResume.entry && !showResume.entry.completed && (showResume.entry.position && showResume.entry.position > 0)){
+      const label = (showResume.entry.title && showResume.entry.title.length) ? showResume.entry.title : (showResume.path || '').split('/').pop();
+      const txt = `${label} • ${formatTime(showResume.entry.position)}`;
+      thumb.appendChild(createMarqueeElement(txt));
+    }
+  } catch(e){
+    console.warn('updateShowBadge failed', e);
+  }
+}
+
+/* find most recent resume entry under a show dir (for badge); returns latest entry under that dir */
+function findResumeForShowDir(showDir){
+  const store = readResume();
+  const normShow = normalizePath(showDir || '');
+  let best = null;
+  for(const [k,v] of Object.entries(store)){
+    const p = (k.split('|')[0] || '');
+    if(!p) continue;
+    const normP = normalizePath(p);
+    if(normP === normShow || normP.startsWith(normShow + '/')){
+      if(!best || (v.updated || 0) > (best.entry.updated || 0)){
+        best = { key: k, entry: v, path: normP };
+      }
+    }
+  }
+  return best;
+}
+function clearResumeForPath(path){
+  const store = readResume();
+  const norm = normalizePath(path);
+  let changed = false;
+  for(const k of Object.keys(store)){
+    const p = (k.split('|')[0] || '');
+    if(normalizePath(p) === norm || p.replace(/^\//,'') === norm.replace(/^\//,'')){
+      delete store[k];
+      changed = true;
+    }
+  }
+  if(changed) writeResume(store);
+}
+
+/* check if a show is fully completed (only if episodes are loaded) */
+function isShowFullyCompleted(show){
+  if(!show || !show._loaded || !Array.isArray(show.episodes) || show.episodes.length === 0) return false;
+  const store = readResume();
+  for(const ep of show.episodes){
+    const key = fileKey(ep.path, ep.sz||0, ep.mt||0);
+    if(!store[key] || !store[key].completed) return false;
+  }
+  return true;
+}
+
+/* fetch NDJSON index */
+async function fetchIndex(path){
+  const url = `${INDEX_ENDPOINT}?path=${encodeURIComponent(normalizePath(path))}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('index fetch failed '+res.status);
+  const text = await res.text();
+
+  // split into lines (handle CRLF), ignore blank lines
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  // parse each line to JSON 
+  const parsed = [];
+  for(const ln of lines){
+    try {
+      parsed.push(JSON.parse(ln));
+    } catch(e){
+      // keep parsing others and warn in console
+      console.warn('index parse failed for line:', ln);
+    }
+  }
+  let header = null;
+  let entries = [];
+
+  if(parsed.length > 0 && parsed[0] && typeof parsed[0] === 'object' && parsed[0].sig){
+    header = parsed[0];
+    entries = parsed.slice(1);
+  } else {
+    entries = parsed;
+  }
+
+  return { header, entries };
+}
+
+
+/* Build shows list */
+async function buildShowsFromIndexes(root){
+  const out = [];
+  const rootResp = await fetchIndex(root);
+  if(rootResp.header && rootResp.header.sig) rootSig = rootResp.header.sig;
+  const rootImages = new Map();
+  for(const e of rootResp.entries){
+    if(e.t === 'f' && isImageName(e.n)){
+      rootImages.set(e.n.replace(/\.[^/.]+$/,'').toLowerCase(), normalizePath((root === '/' ? '' : root) + '/' + e.n));
+    }
+  }
+  for(const e of rootResp.entries){
+    if(e.t !== 'd') continue;
+    const seriesName = e.n;
+    const seriesDir = normalizePath((root === '/' ? '' : root) + '/' + seriesName);
+    let cover = null;
+    const candidates = [ seriesName.toLowerCase(), seriesName.toLowerCase().replace(/\s+/g,'-'), seriesName.toLowerCase().replace(/\s+/g,'_') ];
+    for(const c of candidates) if(rootImages.has(c)) { cover = rootImages.get(c); break; }
+    if(!cover){
+      ['poster','cover','folder','art'].forEach(k => { if(!cover && rootImages.has(k)) cover = rootImages.get(k); });
+    }
+    out.push({ name: seriesName.replace(/[_\.]+/g,' ').trim(), dir: seriesDir, cover: cover || null, _loaded: false, entries: null, episodes: null });
+  }
+  out.sort((a,b)=> a.name.localeCompare(b.name));
+  return out;
+}
+
+/* load series episodes and flatten top-level files + folder children */
+async function loadSeriesEpisodes(show){
+  if(!show || !show.dir) return;
+  if(show._loaded) return;
+  try {
+    const rootResp = await fetchIndex(show.dir);
+    const entries = [];
+    const topFiles = [];
+    const folders = [];
+    for(const e of rootResp.entries){
+      if(e.t === 'd') folders.push(e.n);
+      else if(e.t === 'f') topFiles.push(e);
+    }
+    for(const f of topFiles){
+      if(isVideoName(f.n)) entries.push({ type:'f', name: prettify(f.n), path: normalizePath(show.dir + '/' + f.n), sz: f.sz||0, mt: f.mt||0 });
+    }
+    folders.sort((a,b) => String(a).localeCompare(String(b)));
+    for(const dname of folders){
+      const seasonPath = normalizePath(show.dir + '/' + dname);
+      try {
+        const sresp = await fetchIndex(seasonPath);
+        const children = [];
+        for(const se of sresp.entries){
+          if(se.t === 'f' && isVideoName(se.n)){
+            children.push({ name: prettify(se.n), path: normalizePath(seasonPath + '/' + se.n), sz: se.sz||0, mt: se.mt||0 });
+          }
+        }
+        children.sort((a,b) => a.name.localeCompare(b.name));
+        entries.push({ type:'d', name: dname, path: seasonPath, children });
+      } catch(err){
+        console.warn('season index failed', seasonPath, err);
+        entries.push({ type:'d', name: dname, path: seasonPath, children: [] });
+      }
+    }
+
+    // alphabetical top-level mixing
+    entries.sort((A,B) => String(A.name || '').toLowerCase().localeCompare(String(B.name || '').toLowerCase()));
+
+    const flat = [];
+    let idx = 0;
+    const map = {};
+    for(const en of entries){
+      if(en.type === 'f'){
+        const item = { name: en.name, path: en.path, season: null, sz: en.sz||0, mt: en.mt||0, _seq: idx+1 };
+        flat.push(item);
+        map[normalizePath(item.path)] = idx;
+        idx++;
+      } else if(en.type === 'd'){
+        for(const c of en.children){
+          const item = { name: c.name, path: c.path, season: en.name, sz: c.sz||0, mt:c.mt||0, _seq: idx+1 };
+          flat.push(item);
+          map[normalizePath(item.path)] = idx;
+          idx++;
+        }
+      }
+    }
+    show.entries = entries;
+    show.episodes = flat.slice();
+    show._loaded = true;
+    console.debug('[Shows] loaded show', show.dir, 'episodes=', flat.length);
+  } catch(err){
+    console.warn('loadSeriesEpisodes failed', show.dir, err);
+    show.entries = [];
+    show.episodes = [];
+    show._loaded = true;
+  }
+}
+
+/* ensure flattened for current show */
+async function ensureFlattenedForCurrentShow(){
+  if(!currentShow) return;
+  if(!currentShow._loaded) await loadSeriesEpisodes(currentShow);
+  if(currentShow.episodes && currentShow.episodes.length){
+    flattenedEpisodes = currentShow.episodes.map(e => Object.assign({}, e));
+    pathIndexMap = {};
+    flattenedEpisodes.forEach((it,i)=>{ pathIndexMap[normalizePath(it.path)] = i; });
+    console.debug('[Shows] flattened ready', flattenedEpisodes.length);
+  } else {
+    flattenedEpisodes = [];
+    pathIndexMap = {};
+  }
+}
+
+/* UI render helpers */
+const gridEl = document.getElementById('grid');
+
+function createMarqueeElement(text){
+  const badge = document.createElement('div'); badge.className='badge-resume';
+  const marquee = document.createElement('div'); marquee.className='marquee';
+  const inner = document.createElement('div'); inner.className='m-inner';
+  const s1 = document.createElement('span'); s1.textContent = text;
+  const s2 = document.createElement('span'); s2.textContent = text;
+  inner.appendChild(s1); inner.appendChild(s2); marquee.appendChild(inner); badge.appendChild(marquee);
+  requestAnimationFrame(()=>{ const w = inner.getBoundingClientRect().width || (text.length*8); inner.style.animation = `scroll ${Math.max(6,Math.min(28,w/30))}s linear infinite`; });
+  return badge;
+}
+
+/* Render grid */
+function renderGrid(){
+  gridEl.className = `media-grid ${currentSize}`;
+  const frag = document.createDocumentFragment();
+  if(filtered.length === 0){ gridEl.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--primary-dark);">No shows found.</p>'; return; }
+  for(const show of filtered){
+    const card = document.createElement('div'); card.className='media-card';
+    // helpful hook for single-card updates:
+    try { card.dataset.dir = normalizePath(show.dir || ''); } catch(e){ card.dataset.dir = show.dir || ''; }
+
+    const thumb = document.createElement('div'); thumb.className='thumb-wrapper';
+    const fallback = document.createElement('span'); fallback.className='fallback-text'; fallback.textContent = show.name;
+    thumb.appendChild(fallback);
+
+    // If all episodes are completed (and we have loaded them), show only "Completed"
+    if(show._loaded && isShowFullyCompleted(show)){
+      thumb.appendChild(createMarqueeElement('Completed'));
+    } else {
+      // otherwise show most recent resume info if any
+      const showResume = findResumeForShowDir(show.dir);
+      if(showResume && showResume.entry && !showResume.entry.completed && (showResume.entry.position && showResume.entry.position > 0)){
+        const label = (showResume.entry.title && showResume.entry.title.length) ? showResume.entry.title : (showResume.path || '').split('/').pop();
+        const txt = `${label} • ${formatTime(showResume.entry.position)}`;
+        thumb.appendChild(createMarqueeElement(txt));
+      }
+    }
+
+    if(show.cover){
+      const img = document.createElement('img'); img.className='media-thumb'; img.loading='lazy'; img.alt = show.name; img.src = show.cover;
+      img.onload = ()=>{ img.style.opacity='1'; if(fallback) fallback.style.display='none'; };
+      img.onerror = ()=>{ img.style.display='none'; if(fallback) fallback.style.display='block'; };
+      thumb.appendChild(img);
+    }
+    card.appendChild(thumb);
+    card.addEventListener('click', ()=> openEpisodeModal(show));
+    frag.appendChild(card);
+  }
+  gridEl.innerHTML = '';
+  gridEl.appendChild(frag);
+
+  const animKey = rootSig ? `${ANIM_KEY_BASE}:${rootSig}` : ANIM_KEY_BASE;
+  if(!localStorage.getItem(animKey) && filtered.length>0) runStaggeredAnimation(animKey);
+}
+
+/* stagger animation */
+function runStaggeredAnimation(storeKey){
+  const cards = Array.from(gridEl.querySelectorAll('.media-card'));
+  if(!cards.length){ try{ localStorage.setItem(storeKey, Date.now()); }catch(e){}; return; }
+  requestAnimationFrame(()=>{
+    const gap = parseFloat(getComputedStyle(gridEl).gap) || 16;
+    const gridW = Math.max(1, gridEl.clientWidth);
+    const rect = cards[0].getBoundingClientRect();
+    const cardW = Math.max(1, rect.width);
+    const cols = Math.max(1, Math.floor((gridW + gap) / (cardW + gap)));
+    const stagger = 45;
+    cards.forEach((c,i)=>{ const row = Math.floor(i/cols), col=i%cols; c.style.animationDelay = `${(row*cols + col)*stagger}ms`; c.classList.add('play-anim'); });
+    try{ localStorage.setItem(storeKey, Date.now()); }catch(e){}
+    setTimeout(()=>{ cards.forEach(c=>{ c.style.animationDelay=''; c.classList.remove('play-anim'); }); }, (Math.ceil(cards.length/cols)*cols*stagger)+500);
+  });
+}
+
+/* Modals & controls */
+const episodeModal = document.getElementById('episodeModal');
+const episodeList = document.getElementById('episodeList');
+const episodeResumeBanner = document.getElementById('episodeResumeBanner');
+const episodeModalTitle = document.getElementById('episodeModalTitle');
+const episodeCloseBtn = document.getElementById('episodeCloseBtn');
+
+const actionModal = document.getElementById('actionModal');
+const actionTitle = document.getElementById('actionTitle');
+const actionSub = document.getElementById('actionSub');
+const playButton = document.getElementById('playButton');
+const downloadButton = document.getElementById('downloadButton');
+const actionCloseBtn = document.getElementById('actionCloseBtn');
+
+const videoModal = document.getElementById('videoModal');
+const videoPlayer = document.getElementById('videoPlayer');
+const videoTitle = document.getElementById('videoTitle');
+const videoCloseBtn = document.getElementById('videoCloseBtn');
+const videoNextBtn = document.getElementById('videoNextBtn');
+
+function closeEpisodeModal(){ episodeModal.style.display='none'; episodeResumeBanner.style.display='none'; episodeResumeBanner.innerHTML=''; }
+episodeModal.addEventListener('click', (e)=>{ if(e.target===episodeModal) closeEpisodeModal(); });
+episodeCloseBtn.addEventListener('click', closeEpisodeModal);
+
+function closeActionModal(){ actionModal.style.display='none'; }
+actionModal.addEventListener('click', (e)=>{ if(e.target===actionModal) closeActionModal(); });
+actionCloseBtn.addEventListener('click', closeActionModal);
+
+/* closeVideo optionally avoids autosave (used when marking completed to avoid overwriting) */
+function closeVideo(doSave=true){
+  try{ if(doSave) saveNow(); }catch(e){}
+  detachVideoListeners();
+  videoPlayer.pause();
+  videoPlayer.removeAttribute('src');
+  videoPlayer.load();
+  videoModal.style.display='none';
+  stopAutosave();
+}
+videoModal.addEventListener('click', (e)=>{ if(e.target===videoModal) closeVideo(); });
+videoCloseBtn.addEventListener('click', ()=> closeVideo(true));
+videoNextBtn.addEventListener('click', nextEpisode);
+
+document.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ if(videoModal.style.display==='flex') closeVideo(true); else if(actionModal.style.display==='flex') closeActionModal(); else if(episodeModal.style.display==='flex') closeEpisodeModal(); } });
+
+/* open episode modal */
+async function openEpisodeModal(show){
+  currentShow = show;
+  episodeModalTitle.textContent = show.name;
+  episodeList.innerHTML = '<p style="padding:12px;color:var(--muted)">Loading episodes…</p>';
+  episodeResumeBanner.style.display='none'; episodeResumeBanner.innerHTML='';
+  episodeModal.style.display='flex';
+
+  if(!show._loaded) await loadSeriesEpisodes(show);
+  await ensureFlattenedForCurrentShow();
+
+  // If the whole show is completed (and we've loaded episodes) show single "Completed"
+  if(show._loaded && isShowFullyCompleted(show)){
+    episodeResumeBanner.style.display='block';
+    episodeResumeBanner.innerHTML = '';
+    const txt = document.createElement('div'); txt.textContent = 'Completed'; txt.style.marginBottom='6px';
+    const btn = document.createElement('button'); btn.className='cancel'; btn.textContent = 'Completed'; btn.disabled = true;
+    episodeResumeBanner.appendChild(txt); episodeResumeBanner.appendChild(btn);
+  } else {
+    const showResume = findResumeForShowDir(show.dir);
+    if(showResume && showResume.entry && !showResume.entry.completed && (showResume.entry.position && showResume.entry.position > 0)){
+      episodeResumeBanner.style.display='block'; episodeResumeBanner.innerHTML = '';
+      const txt = document.createElement('div'); txt.textContent = `${showResume.entry.title || showResume.path.split('/').pop()} • ${formatTime(showResume.entry.position || 0)}`; txt.style.marginBottom='6px';
+      const btn = document.createElement('button'); btn.className='secondary';
+      btn.textContent = `Resume: ${(showResume.entry.title || showResume.path.split('/').pop()).slice(0,48)} • ${formatTime(showResume.entry.position || 0)}`;
+      btn.onclick = () => {
+        const idx = findIndexForPathOrBasename(showResume.path);
+        if(idx !== undefined && idx !== null){
+          openActionModalForEpisode(flattenedEpisodes[idx]);
+          openVideo(fileUrl(flattenedEpisodes[idx].path), true, flattenedEpisodes[idx]);
+        } else {
+          openVideo(fileUrl(showResume.path), true, { name: showResume.entry.title || showResume.path.split('/').pop(), path: showResume.path });
+        }
+        closeEpisodeModal();
+      };
+      episodeResumeBanner.appendChild(txt);
+      episodeResumeBanner.appendChild(btn);
+    }
+  }
+
+  episodeList.innerHTML = '';
+  const entries = show.entries || [];
+  if(entries.length === 0){ episodeList.innerHTML = '<p style="padding:12px;color:var(--muted)">No episodes found.</p>'; return; }
+
+  entries.forEach(en=>{
+    if(en.type === 'f'){
+      const row = document.createElement('div'); row.className='ep-row';
+      const btn = document.createElement('button'); btn.textContent = en.name || 'Untitled';
+      btn.onclick = async ()=>{ await ensureFlattenedForCurrentShow(); const idx = findIndexForPathOrBasename(en.path); const target = (idx !== undefined)? flattenedEpisodes[idx] : { name: en.name, path: en.path, season: null }; openActionModalForEpisode(target); };
+      row.appendChild(btn); episodeList.appendChild(row);
+    } else if(en.type === 'd'){
+      const section = document.createElement('div');
+      const toggle = document.createElement('div'); toggle.className='season-toggle';
+      const tleft = document.createElement('div'); tleft.textContent = en.name;
+      const tchev = document.createElement('div'); tchev.textContent = '▶';
+      toggle.appendChild(tleft); toggle.appendChild(tchev);
+      const content = document.createElement('div'); content.className='season-content'; content.style.display='none';
+      if(!en.children || en.children.length===0){ const none = document.createElement('div'); none.style.padding='8px'; none.style.color='var(--muted)'; none.textContent='No episodes'; content.appendChild(none); }
+      else {
+        en.children.forEach(child => {
+          const row = document.createElement('div'); row.className='ep-row';
+          const btn = document.createElement('button'); btn.textContent = child.name;
+          btn.onclick = async ()=>{ await ensureFlattenedForCurrentShow(); const idx = findIndexForPathOrBasename(child.path); const target = (idx !== undefined)? flattenedEpisodes[idx] : { name: child.name, path: child.path, season: en.name }; openActionModalForEpisode(target); };
+          row.appendChild(btn); content.appendChild(row);
+        });
+      }
+      toggle.onclick = ()=>{ const open = content.style.display === 'block'; content.style.display = open ? 'none' : 'block'; tchev.textContent = open ? '▶':'▼'; if(!open){ Array.from(content.querySelectorAll('.ep-row')).forEach((r,i)=>{ r.style.opacity='0'; r.style.transform='translateY(6px)'; setTimeout(()=>{ r.style.transition='opacity .25s ease, transform .25s ease'; r.style.opacity='1'; r.style.transform='translateY(0)'; }, 20*i); }); } };
+      section.appendChild(toggle); section.appendChild(content); episodeList.appendChild(section);
+    }
+  });
+}
+
+/* action modal for an episode (no resume button here) */
+function openActionModalForEpisode(ep){
+  // canonicalize to flattened
+  if(ep && ep.path){
+    const idx = findIndexForPathOrBasename(ep.path);
+    if(idx !== undefined && idx !== null){ ep = Object.assign({}, flattenedEpisodes[idx]); currentEpisodeIndex = idx; }
+  }
+  currentEpisode = ep;
+  if(currentEpisode && currentEpisode.path){
+    const idx = findIndexForPathOrBasename(currentEpisode.path);
+    currentEpisodeIndex = (idx !== undefined && idx !== null) ? idx : -1;
+  } else currentEpisodeIndex = -1;
+
+  actionTitle.textContent = ep.name || 'Episode';
+  actionSub.textContent = `${currentShow ? currentShow.name : ''} ${ep.season ? '— ' + ep.season : ''}`;
+
+    playButton.onclick = ()=>{ clearResumeForPath(ep.path); closeActionModal(); openVideo(fileUrl(ep.path), false, ep); 
+    // update only this show's badge (no full re-render)
+    const showDir = findShowDirForEpisodePath(ep.path);
+    if(showDir) updateShowBadge(showDir);
+  };
+  downloadButton.onclick = ()=>{ closeActionModal(); startDownload(ep); };
+
+  actionModal.style.display = 'flex';
+}
+
+/* download */
+function startDownload(ep){
+  if(!confirm(`Download "${ep.name}"?`)) return;
+  const a = document.createElement('a');
+  a.href = isVideoName(ep.path) ? `${MEDIA_ENDPOINT}?file=${encodeURIComponent(normalizePath(ep.path))}` : encodeURI(normalizePath(ep.path));
+  a.download = ep.name || ep.file;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/* Player wiring & logic (no auto-advance on ended — we close and mark completed) */
+let stallTimer=null, stallRetries=0;
+let _meta=null, _pause=null, _seek=null, _ended=null;
+
+function detachVideoListeners(){ if(_meta) videoPlayer.removeEventListener('loadedmetadata', _meta); if(_pause) videoPlayer.removeEventListener('pause', _pause); if(_seek) videoPlayer.removeEventListener('seeked', _seek); if(_ended) videoPlayer.removeEventListener('ended', _ended); _meta=_pause=_seek=_ended=null; }
+function attachVideoListeners(){ detachVideoListeners(); _meta = ()=>{ videoPlayer.removeEventListener('loadedmetadata', _meta); startAutosave(); }; _pause = ()=>{ saveNow(); }; _seek = ()=>{ saveNow(); }; _ended = ()=>{ handleEpisodeEnded(); }; videoPlayer.addEventListener('loadedmetadata', _meta); videoPlayer.addEventListener('pause', _pause); videoPlayer.addEventListener('seeked', _seek); videoPlayer.addEventListener('ended', _ended); }
+
+function startStallWatcher(player, src){
+  clearTimeout(stallTimer); stallRetries = 0;
+  function schedule(){ clearTimeout(stallTimer); stallTimer = setTimeout(()=>{ if(!player.paused && player.readyState < 3 && stallRetries < 2){ stallRetries++; player.src = `${src}${src.includes('?') ? '&' : '?'}_=${Date.now()}`; player.load(); try{ player.currentTime = player.currentTime; }catch(e){} player.play().catch(()=>{}); schedule(); } }, 8000); }
+  const once = function once(){ player.removeEventListener('playing', once); schedule(); };
+  player.addEventListener('playing', once);
+  player.addEventListener('pause', ()=> clearTimeout(stallTimer));
+  player.addEventListener('ended', ()=> clearTimeout(stallTimer));
+}
+
+/* find index: exact path first -> basename fallback */
+function findIndexForPathOrBasename(path){
+  const norm = normalizePath(path);
+  if(pathIndexMap && pathIndexMap[norm] !== undefined) return pathIndexMap[norm];
+  const base = norm.split('/').pop().toLowerCase();
+  for(let i=0;i<flattenedEpisodes.length;i++){
+    const ebase = (flattenedEpisodes[i].path || '').split('/').pop().toLowerCase();
+    if(ebase === base) return i;
+  }
+  return undefined;
+}
+
+/* openVideo uses fileKey resume matching and updates title to the current episode */
+async function openVideo(src, useResume=false, ep=null){
+  if(ep) currentEpisode = ep;
+  if(!currentEpisode || !currentEpisode.path) { console.debug('[Shows] openVideo called without episode'); return; }
+
+  await ensureFlattenedForCurrentShow();
+  const idx = findIndexForPathOrBasename(currentEpisode.path);
+  if(idx !== undefined && idx !== null){ currentEpisodeIndex = idx; currentEpisode = Object.assign({}, flattenedEpisodes[idx]); }
+  else { currentEpisodeIndex = -1; }
+
+  console.debug('[Shows] openVideo', { path: currentEpisode.path, index: currentEpisodeIndex });
+
+  detachVideoListeners();
+  videoPlayer.pause();
+  videoPlayer.removeAttribute('src');
+  videoPlayer.load();
+
+  // ensure modal background matches current theme (in case user toggled while modal hidden)
+  const darkNow = document.body.classList.contains('dark');
+  const videoModalContent = document.querySelector('.video-modal-content');
+  if(videoModalContent) videoModalContent.style.background = darkNow ? '#111' : '#fff';
+  if(videoTitle) videoTitle.style.color = darkNow ? '#fff' : 'var(--text, #111)';
+  if(videoPlayer){
+    videoPlayer.style.background = darkNow ? '#000' : '#fff';
+    videoPlayer.style.outline = darkNow ? 'none' : '1px solid rgba(0,0,0,0.06)';
+  }
+
+  videoModal.style.display = 'flex';
+
+  // update title to match what's playing (ensures title always reflects actual ep)
+  videoTitle.textContent = currentEpisode.name || '';
+
+  // find saved resume for this episode
+  const saved = findResumeForPath(currentEpisode);
+
+  function onMeta(){
+    videoPlayer.removeEventListener('loadedmetadata', onMeta);
+    console.debug('[Shows] loadedmetadata', { duration: videoPlayer.duration, saved });
+    if(useResume && saved && saved.entry && saved.entry.position > 1 && !saved.entry.completed){
+      try { videoPlayer.currentTime = Math.min(saved.entry.position, videoPlayer.duration - 2); console.debug('[Shows] seeking to', saved.entry.position); } catch(e){ console.warn('seek failed', e); }
+    }
+    startAutosave();
+  }
+  videoPlayer.addEventListener('loadedmetadata', onMeta);
+
+  videoPlayer.src = fileUrl(currentEpisode.path);
+  attachVideoListeners();
+  startStallWatcher(videoPlayer, videoPlayer.src);
+  videoPlayer.play().catch(()=>{});
+}
+
+/* When an episode ends: mark episode completed and either auto-advance to the next episode
+   (same behavior as clicking Next) OR, if there is no next episode, close the player/modal. */
+function handleEpisodeEnded(){
+  console.debug('[Shows] episode ended', currentEpisode && currentEpisode.path);
+  if(currentEpisode && currentEpisode.path){
+    try {
+      const store = readResume();
+      const key = fileKey(currentEpisode.path, currentEpisode.sz||0, currentEpisode.mt||0);
+      store[key] = { completed: true, position: 0, duration: Math.floor(videoPlayer.duration || 0), updated: Date.now(), title: currentEpisode.name || '' };
+      writeResume(store);
+    } catch(e){ console.warn('failed to mark completed', e); }
+  }
+
+  // Stop the periodic autosave now that we've written completed
+  stopAutosave();
+
+  // Determine current index robustly
+  let curIdx = currentEpisodeIndex;
+  if((curIdx === undefined || curIdx === -1) && currentEpisode && currentEpisode.path) curIdx = findIndexForPathOrBasename(currentEpisode.path);
+  if(curIdx === undefined || curIdx === null) {
+    // no index info; just close everything
+    closeVideo(false);
+    closeEpisodeModal();
+    renderGrid();
+    return;
+  }
+
+  const nextIdx = curIdx + 1;
+  if(Array.isArray(flattenedEpisodes) && nextIdx < flattenedEpisodes.length){
+    // Auto-advance: reuse nextEpisode() logic so behavior is identical to manual Next button
+    // Set currentEpisodeIndex correctly and call nextEpisode() which will update UI/resume.
+    currentEpisodeIndex = curIdx; // ensure nextEpisode computes next from the right base
+    try {
+      nextEpisode();
+    } catch(e){
+      console.warn('auto next failed', e);
+      // fallback: close if next failed
+      closeVideo(false);
+      closeEpisodeModal();
+    }
+    // update only the affected show's badge (nextEpisode will update the player)
+    const sd = findShowDirForEpisodePath(currentEpisode && currentEpisode.path);
+    if(sd) updateShowBadge(sd);
+
+  } else {
+    // No more episodes: close player and episode modal (do not autosave - we've already marked completed)
+    closeVideo(false);
+    closeEpisodeModal();
+    const sd = findShowDirForEpisodePath(currentEpisode && currentEpisode.path);
+    if(sd) updateShowBadge(sd);
+  }
+}
+
+/* Next button (manual) - still allowed; moves to next ep if available */
+function nextEpisode(){
+  console.debug('[Shows] nextEpisode called, currentIndex=', currentEpisodeIndex);
+  if(!flattenedEpisodes || flattenedEpisodes.length === 0) return;
+  let curIdx = currentEpisodeIndex;
+  if(curIdx === -1 && currentEpisode && currentEpisode.path) curIdx = findIndexForPathOrBasename(currentEpisode.path);
+  if(curIdx === undefined || curIdx === null) { closeVideo(true); return; }
+  const nextIdx = curIdx + 1;
+  if(nextIdx >= flattenedEpisodes.length){ closeVideo(true); return; }
+  const next = flattenedEpisodes[nextIdx];
+  console.debug('[Shows] nextEpisode ->', nextIdx, next.path);
+
+  // write a tiny resume for next (position=1) so UI shows upcoming
+    try {
+        const key = fileKey(next.path, next.sz||0, next.mt||0);
+        const entry = { position: 1, duration: next.sz || 0, updated: Date.now(), title: next.name || '' };
+        // Save and purge other non-completed resumes in the same show
+        saveResumeEntryByKey(key, entry, true);
+    } catch(e){ console.warn('saving resume for next failed', e); }
+
+  currentEpisodeIndex = nextIdx;
+  currentEpisode = Object.assign({}, next);
+
+  // update title, swap src and play
+  videoTitle.textContent = currentEpisode.name || '';
+  detachVideoListeners();
+  videoPlayer.pause();
+  videoPlayer.src = fileUrl(currentEpisode.path);
+  videoPlayer.load();
+  attachVideoListeners();
+  startStallWatcher(videoPlayer, videoPlayer.src);
+  videoPlayer.play().catch(()=>{});
+  const sd = findShowDirForEpisodePath(currentEpisode && currentEpisode.path);
+  if(sd) updateShowBadge(sd);
+}
+
+/* Autosave */
+function startAutosave(){ stopAutosave(); autosaveTimer = setInterval(saveNow, 4000); }
+function stopAutosave(){ if(autosaveTimer){ clearInterval(autosaveTimer); autosaveTimer = null; } }
+
+function saveNow(){
+  try {
+    if(!currentEpisode || !currentEpisode.path) return;
+    const cur = Math.floor(videoPlayer.currentTime || 0);
+    const dur = Math.floor(videoPlayer.duration || 0);
+    if(!isFinite(cur)) return;
+    if(cur > 0 && dur > 0){
+      const key = fileKey(currentEpisode.path, currentEpisode.sz || 0, currentEpisode.mt || 0);
+
+      // preserve previous logic: do not overwrite an already-completed entry for the same file
+      const store = readResume();
+      const existing = store[key];
+      if(existing && existing.completed) return;
+
+      const entry = { position: cur, duration: dur, updated: Date.now(), title: currentEpisode.name || '' };
+
+      // Save and purge other non-completed resume entries for this show so only the latest is kept
+      saveResumeEntryByKey(key, entry, true);
+
+      console.debug('[Shows] autosave', { key, pos: cur, dur });
+
+      // update only the show badge (stops full-grid re-render and thumbnail flashing)
+      const showDir = findShowDirForEpisodePath(currentEpisode.path);
+      if(showDir) updateShowBadge(showDir);
+
+      // if episode modal is open for the same show, update its resume banner too
+      if(episodeModal.style.display === 'flex' && currentShow && normalizePath(currentShow.dir) === showDir){
+        // rebuild the resume banner minimal contents (do not re-render the whole list)
+        const showResume = findResumeForShowDir(showDir);
+        if(showResume && showResume.entry && !showResume.entry.completed && (showResume.entry.position && showResume.entry.position > 0)){
+          episodeResumeBanner.style.display='block'; episodeResumeBanner.innerHTML = '';
+          const txt = document.createElement('div'); txt.textContent = `${showResume.entry.title || showResume.path.split('/').pop()} • ${formatTime(showResume.entry.position || 0)}`; txt.style.marginBottom='6px';
+          const btn = document.createElement('button'); btn.className='secondary';
+          btn.textContent = `Resume: ${(showResume.entry.title || showResume.path.split('/').pop()).slice(0,48)} • ${formatTime(showResume.entry.position || 0)}`;
+          btn.onclick = () => {
+            const idx = findIndexForPathOrBasename(showResume.path);
+            if(idx !== undefined && idx !== null){
+              openActionModalForEpisode(flattenedEpisodes[idx]);
+              openVideo(fileUrl(flattenedEpisodes[idx].path), true, flattenedEpisodes[idx]);
+            } else {
+              openVideo(fileUrl(showResume.path), true, { name: showResume.entry.title || showResume.path.split('/').pop(), path: showResume.path });
+            }
+            closeEpisodeModal();
+          };
+          episodeResumeBanner.appendChild(txt);
+          episodeResumeBanner.appendChild(btn);
+        } else {
+          episodeResumeBanner.style.display='none'; episodeResumeBanner.innerHTML='';
+        }
       }
 
-      p.addEventListener('playing', function once() {
-        p.removeEventListener('playing', once);
-        schedule();
-      });
-      p.addEventListener('pause',  () => clearTimeout(stallTimer));
-      p.addEventListener('ended',  () => clearTimeout(stallTimer));
+    }
+  } catch(e){ console.warn('saveNow failed', e); }
+}
+
+
+
+/* UI helpers: search, sort, view size */
+const searchInput = document.getElementById('searchInput');
+const sortSelect = document.getElementById('sortSelect');
+const viewButtons = document.querySelectorAll('.view-btn');
+
+function applyFilter(term=''){ const lower = (term||'').trim().toLowerCase(); filtered = !lower ? shows.slice() : shows.filter(s => (s.name||'').toLowerCase().includes(lower)); applySort(sortSelect.value || 'nameAsc'); }
+function applySort(mode='nameAsc'){ filtered.sort((a,b) => mode === 'nameDesc' ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name)); renderGrid(); }
+function setViewSize(size){ currentSize = size; viewButtons.forEach(btn => { btn.classList.toggle('active', btn.dataset.size === size); btn.setAttribute('aria-pressed', btn.dataset.size === size ? 'true' : 'false'); }); gridEl.className = `media-grid ${size}`; localStorage.setItem('nomadShowsSize', size); }
+
+/* Index watcher + load library */
+async function checkIndex(){
+  try {
+    const res = await fetch(`${INDEX_ENDPOINT}?path=${encodeURIComponent(ROOT_PATH)}`);
+    if(!res.ok) return;
+    const text = await res.text();
+    const headerLine = text.split('\n')[0];
+    if(headerLine){
+      const header = JSON.parse(headerLine);
+      if(header && header.sig && rootSig && rootSig !== header.sig) await loadLibrary();
+      else if(header && header.sig && !rootSig) rootSig = header.sig;
+    }
+  } catch(e){}
+}
+
+async function loadLibrary(){
+  try {
+    const list = await buildShowsFromIndexes(ROOT_PATH);
+    if(list && list.length){ shows = list; filtered = shows.slice(); renderGrid(); return; }
+  } catch(e){ console.warn('index build failed', e); }
+  // fallback
+  try {
+    const fallback = await fetch('/media.json').then(r => r.ok ? r.json() : null).catch(()=>null);
+    if(fallback && (fallback.shows || fallback.Shows)){
+      const raw = fallback.shows || fallback.Shows || [];
+      const out = raw.map((s,si) => ({ name: s.name || s.title || 'Unknown', dir: '/'+(s.name||si), cover: s.cover || s.poster || null, _loaded: true, entries: null, episodes: (s.episodes || s.items || []).filter(e => isVideoName(e.file||e.path||'')).map((e, idx) => ({ name: e.name || e.title || prettify(e.file||e.path||''), path: e.file||e.path||'', season: e.season || null, sz: e.sz||0, mt: e.mt||0, _seq: idx+1 })) }));
+      shows = out; filtered = shows.slice(); renderGrid(); return;
+    }
+  } catch(e){ console.error('fallback failed', e); }
+  gridEl.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--primary-dark);">Unable to load content.</p>';
+}
+
+/* Handle incoming hash like #open=%2FShows%2FShowName%2FS1%20E1.mp4
+*/
+async function handleHashOpenIfPresent(){
+  try {
+    if(!location.hash) return;
+    const raw = location.hash.replace(/^#/,'');
+
+    // parse hash key=value pairs (hash format used by menu.html)
+    const params = {};
+    raw.split('&').forEach(p => {
+      const [k, v] = p.split('=');
+      if(!k) return;
+      try { params[k] = v === undefined ? '' : decodeURIComponent(v || ''); }
+      catch(e) { params[k] = v === undefined ? '' : (v || ''); }
+    });
+
+    if(!params.open) return;
+
+    const openPath = normalizePath(params.open || '');
+    const parts = openPath.split('/').filter(Boolean); // e.g. ['Shows','ShowName','S01E01.mkv']
+
+    // If the path is exactly a show directory like /Shows/ShowName (i.e. two path parts),
+    // open the episode modal instead of playing.
+    if(parts.length >= 2 && parts[0].toLowerCase() === 'shows' && parts.length === 2){
+      const showDirCandidate = '/' + parts.slice(0,2).join('/');
+
+      // ensure library is loaded so we can find the show object
+      if(!shows || !shows.length){
+        try { await loadLibrary(); } catch(e){ /* ignore */ }
+      }
+
+      // find by normalized dir (case-insensitive)
+      let show = shows.find(s => normalizePath(s.dir).toLowerCase() === showDirCandidate.toLowerCase());
+
+      // fallback: try matching by show name if exact dir not found
+      if(!show){
+        const showNameCandidate = decodeURIComponent(parts[1]).replace(/[_\-\%]+/g,' ').toLowerCase();
+        show = shows.find(s => (s.name || '').toLowerCase() === showNameCandidate);
+      }
+
+      if(show){
+        // load episodes, set currentShow and open modal (no playback)
+        await loadSeriesEpisodes(show);
+        currentShow = show;
+        await ensureFlattenedForCurrentShow();
+        openEpisodeModal(show);
+      }
+
+      // Clear the hash so reloads don't re-open the modal
+      history.replaceState(null, '', location.pathname + location.search);
+      return;
     }
 
-    function playEpisode(idx) {
-      if (idx < 0 || idx >= flattened.length) return;
-      currentIdx = idx;
-      const ep = flattened[idx];
-      videoPlayer.pause();
-      videoPlayer.removeAttribute('src');
-      videoPlayer.load();
-      videoModal.style.display = 'flex';
-
-      const url = mediaUrl(ep.file);
-      videoPlayer.src = url;
-      startStallWatcher(videoPlayer, url);
-      videoPlayer.play().catch(()=>{});
-    }
-    function closeVideo() {
-      videoPlayer.pause();
-      videoPlayer.removeAttribute('src');
-      videoPlayer.load();
-      videoModal.style.display = 'none';
+    // Otherwise treat open as an explicit episode/file request (existing behavior preserved)
+    // Attempt to find the parent show (first two segments)
+    if(parts.length < 3){
+      // not enough info to identify an episode; clear hash and exit
+      history.replaceState(null, '', location.pathname + location.search);
+      return;
     }
 
-    nextBtn.onclick = () => playEpisode(currentIdx + 1);
-    videoPlayer.addEventListener('ended', () => playEpisode(currentIdx + 1));
+    const showDir = '/' + parts.slice(0,2).join('/'); // /Shows/ShowName
 
-  </script>
+    // ensure shows list is present
+    if(!shows || !shows.length){
+      try { await loadLibrary(); } catch(e){ /* ignore */ }
+    }
+
+    let showObj = shows.find(s => normalizePath(s.dir).toLowerCase() === showDir.toLowerCase());
+    if(!showObj){
+      const showNameCandidate = decodeURIComponent(parts[1]).replace(/[_\-\%]+/g,' ').toLowerCase();
+      showObj = shows.find(s => (s.name||'').toLowerCase() === showNameCandidate);
+    }
+
+    if(!showObj){
+      // can't find show; clear hash and stop
+      history.replaceState(null, '', location.pathname + location.search);
+      return;
+    }
+
+    // ensure episodes loaded for that show
+    await loadSeriesEpisodes(showObj);
+    currentShow = showObj;
+    await ensureFlattenedForCurrentShow();
+
+    // find the episode (exact path or fallback to basename match)
+    const idx = findIndexForPathOrBasename(openPath);
+    const ep = (idx !== undefined && idx !== null) ? flattenedEpisodes[idx] : null;
+
+    // Preserve prior behavior: if a specific episode was requested, open it in the player (resume)
+    if(ep){
+      openVideo(fileUrl(ep.path), true, ep);
+    } else {
+      // If we didn't find a matching episode file, try to open the provided path directly in the player.
+      openVideo(fileUrl(openPath), true, { name: openPath.split('/').pop(), path: openPath });
+    }
+
+    // Clear the hash so a reload doesn't auto-play again
+    history.replaceState(null, '', location.pathname + location.search);
+
+  } catch(err){
+    console.warn('handleHashOpenIfPresent failed', err);
+  }
+}
+
+
+// also respond to hash changes while on page
+window.addEventListener('hashchange', ()=> handleHashOpenIfPresent());
+
+/* Boot */
+setViewSize(currentSize);
+viewButtons.forEach(btn => btn.addEventListener('click', () => setViewSize(btn.dataset.size)));
+searchInput.addEventListener('input', e => { clearTimeout(window.__debounce); window.__debounce = setTimeout(()=> applyFilter(e.target.value), 150); });
+sortSelect.addEventListener('change', () => applySort(sortSelect.value));
+
+(async function init(){
+  try {
+    await loadLibrary();
+    // handle hash if present (resume/open)
+    await handleHashOpenIfPresent();
+  } catch(e){ console.error('init failed', e); }
+  setInterval(checkIndex, 30000);
+})();
+</script>
+
 </body>
 </html>

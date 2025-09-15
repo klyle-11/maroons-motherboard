@@ -1,236 +1,695 @@
 <!DOCTYPE html>
-<!--  Nomad Books Page -->
+<!-- Nomad Books Page — NDJSON index + direct /Books serving (fixed) -->
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Jcorp Nomad Media Server – Books">
-    <title>Nomad • Books</title>
-    <link rel="icon" href="favicon.ico" type="image/x-icon">
-    <script src="epub.min.js"></script>
-    <style>
-        :root{--primary:#007bff;--primary-dark:#0056b3;--bg:#f4f4f9;--text:#333;--radius:8px;--shadow:0 4px 12px rgba(0,0,0,0.08);}        
-        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-        body{font-family:Arial,sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column;min-height:100vh;}
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Nomad • Books</title>
+  <style>
+    :root{
+      --primary:#007bff; --primary-dark:#0056b3; --bg:#f4f4f9; --text:#333;
+      --muted:#6b7280; --radius:8px; --shadow:0 4px 12px rgba(0,0,0,0.08);
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%}
+    body{font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column;min-height:100vh}
 
-        /* Header */
-        header{background:var(--primary);color:#fff;padding:1.25rem 1rem;display:flex;align-items:center;justify-content:space-between;box-shadow:var(--shadow);position:sticky;top:0;z-index:50;}
-        header h1{font-size:clamp(1.25rem,5vw,1.75rem);font-weight:600;white-space:nowrap;}
-        .back-btn{text-decoration:none;color:#fff;background:var(--primary-dark);padding:.5rem .75rem;border-radius:var(--radius);font-size:.9rem;white-space:nowrap;}
+    /* dark mode background/text overrides when body.dark is present */
+    body.dark{ background:#0f1720; color:#e6eef8; }
+    body.dark header{ background:#07142a; color:#e6eef8; }
+    body.dark .toolbar{ background:#0b1220; border-bottom-color: rgba(255,255,255,0.04); }
+    body.dark .media-card{ background:#0b1220; box-shadow: 0 6px 18px rgba(0,0,0,0.18); }
+    body.dark .overlay-title{ color:#e6eef8; }
 
-        /* Toolbar */
-        .toolbar{background:var(--bg);padding:.75rem 1rem;display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;border-bottom:1px solid #ddd;position:sticky;top:64px;z-index:45;}
-        .toolbar input[type="search"]{flex:1 1 200px;padding:.5rem .75rem;border:1px solid #ccc;border-radius:var(--radius);font-size:.95rem;}
-        .toolbar select,.toolbar .view-btn{padding:.5rem .75rem;border:1px solid #ccc;background:#fff;border-radius:var(--radius);font-size:.9rem;cursor:pointer;}
-        .view-btn.active{background:var(--primary);color:#fff;border-color:var(--primary-dark);}        
+    header{background:var(--primary);color:#fff;padding:20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:60;box-shadow:var(--shadow)}
+    header h1{font-size:clamp(1.25rem,4vw,1.75rem);margin:0}
+    .back-btn{text-decoration:none;color:#fff;background:var(--primary-dark);padding:.5rem .75rem;border-radius:var(--radius);font-size:.95rem}
 
-        /* Grid */
-        main{flex:1;display:flex;flex-direction:column;max-width:1200px;width:100%;margin:0 auto;}
-        .grid-wrapper{flex:1;overflow-y:auto;padding:1rem;}
-        .media-grid{display:grid;gap:1rem;}
-        .media-grid.small {grid-template-columns:repeat(auto-fit,minmax(120px,1fr));}
-        .media-grid.medium{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
-        .media-grid.large {grid-template-columns:repeat(auto-fit,minmax(220px,1fr));}
-        @media(max-width:600px){
-            header{flex-direction:column;gap:.5rem;}
-            .back-btn{width:100%;text-align:center;}
-            .toolbar{top:112px;}
-            .media-grid.small  {grid-template-columns:repeat(2,1fr);} /* 2 per row */
-            .media-grid.medium {grid-template-columns:repeat(3,1fr);} /* 3 per row */
-            .media-grid.large  {grid-template-columns:repeat(4,1fr);} /* 4 per row */
-        }
+    .toolbar{background:var(--bg);padding:.75rem 1rem;display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;border-bottom:1px solid #ddd;position:sticky;top:80px;z-index:55;}
+    .toolbar input[type="search"]{flex:1 1 200px;padding:.5rem .75rem;border:1px solid #ccc;border-radius:var(--radius);font-size:0.95rem;}
+    .toolbar select, .toolbar .view-btn{padding:.5rem .75rem;border:1px solid #ccc;background:#fff;border-radius:var(--radius);font-size:0.9rem;cursor:pointer;}
+    .view-btn.active{background:var(--primary);color:#fff;border-color:var(--primary-dark);}
 
-        .media-card{background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;transition:transform .25s ease;cursor:pointer;width:100%;max-width:220px;margin:0 auto;}
-        .media-grid.small  .media-card{max-width:120px;}
-        .media-grid.medium .media-card{max-width:160px;}
-        .media-grid.large  .media-card{max-width:220px;}
-        .media-card:hover{transform:translateY(-3px);}        
-        .media-thumb{width:100%;aspect-ratio:2/3;object-fit:cover;}
-        
+    main{flex:1;display:flex;flex-direction:column;max-width:1200px;width:100%;margin:0 auto;padding:1rem}
+    .grid-wrapper{flex:1;overflow-y:auto;padding-bottom:40px}
+    .media-grid{display:grid;gap:1rem;}
+    .media-grid.small  {grid-template-columns:repeat(auto-fit,minmax(120px,1fr));}
+    .media-grid.medium{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));}
+    .media-grid.large {grid-template-columns:repeat(auto-fit,minmax(220px,1fr));}
 
-        /* Action Modal */
-        .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);justify-content:center;align-items:center;z-index:1000;}
-        .modal-content{background:#fff;padding:20px;border-radius:10px;text-align:center;width:90%;max-width:500px;box-shadow:0 6px 20px rgba(0,0,0,0.1);}        
-        .modal-content h2{margin-bottom:10px;font-size:1.25rem;}
-        .modal-content button{padding:12px;font-size:1em;margin:10px 0;background:var(--primary);color:#fff;border:none;border-radius:5px;cursor:pointer;width:100%;transition:background-color .3s ease;}
-        .modal-content button:hover{background:var(--primary-dark);}        
+    @media (max-width:600px){
+      header{flex-direction:column;gap:.5rem;}
+      .back-btn{width:100%;text-align:center;}
+      .toolbar{top:112px;}
+      .media-grid.small  {grid-template-columns:repeat(2,1fr);}
+      .media-grid.medium {grid-template-columns:repeat(3,1fr);}
+      .media-grid.large  {grid-template-columns:repeat(4,1fr);}
+    }
 
-        .modal-content button:disabled {
-        background: #ccc;
-        color: #666;
-        cursor: not-allowed;
-        }
-    </style>
+    .media-card{background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;transition:transform .25s ease;cursor:pointer;width:100%;max-width:220px;margin:0 auto;opacity:1;transform:none;}
+    .media-grid.small  .media-card{max-width:120px;}
+    .media-grid.medium .media-card{max-width:160px;}
+    .media-grid.large  .media-card{max-width:220px;}
+    .media-card:hover{transform:translateY(-3px);}
+
+    .thumb-wrapper{position:relative;display:flex;align-items:center;justify-content:center;background:#eee;color:#555;font-size:0.95rem;text-align:center;width:100%;aspect-ratio:2/3;padding:6px;overflow:hidden}
+    .overlay-title{position:absolute;left:8px;right:8px;top:8px;bottom:8px;display:flex;align-items:center;justify-content:center;text-align:center;padding:6px;z-index:3;color:#06306f;font-weight:700;background:transparent}
+    .media-thumb{width:100%;height:100%;object-fit:cover;position:absolute;top:0;left:0;z-index:1;opacity:0;transition:opacity .25s ease}
+
+    /* card title is only in overlay, no duplicate caption under image */
+    .card-body{padding:10px;text-align:center;display:none}
+    .card-title{font-weight:700;font-size:0.98rem;color:#06306f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .card-sub{font-size:0.85rem;color:var(--muted);margin-top:6px}
+
+    .modal, .list-modal {display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);justify-content:center;align-items:center;z-index:1000;}
+    .modal-content, .list-modal-content{background:#fff;padding:16px;border-radius:10px;text-align:center;width:92%;max-width:720px;box-shadow:0 6px 20px rgba(0,0,0,0.1);overflow:hidden;}
+    .modal-content h2, .list-modal-content h2{margin:0 0 10px 0}
+
+    /* button styles: consistent primary + muted */
+    .btn{
+      background:var(--primary);
+      color:#fff;
+      border:0;
+      padding:12px;
+      font-size:1rem;
+      border-radius:8px;
+      cursor:pointer;
+      width:100%;
+      box-shadow: 0 2px 6px rgba(2,6,23,0.08);
+    }
+    .btn.small { padding:8px; font-size:.9rem; width:auto; min-width:96px; }
+
+    .btn-muted{
+      background:#fff;
+      color:#333;
+      border:1px solid #e6e6e9;
+      padding:12px;
+      border-radius:8px;
+      cursor:pointer;
+      width:100%;
+      font-size:1rem;
+    }
+
+    .list{max-height:420px;overflow:auto;text-align:left;margin-top:8px}
+    .list .item {display:flex;gap:8px;align-items:center;padding:8px;border-bottom:1px solid #f4f4f9}
+    .list .item .title {flex:1}
+    .list .item .meta {font-size:0.9rem;color:var(--muted)}
+    .row-buttons{display:flex;gap:8px;min-width:120px}
+    .row-buttons button{padding:8px;border-radius:6px;border:0;cursor:pointer}
+    footer{padding:10px;text-align:center;color:#666}
+
+    /* pop-in animation (staggered via --delay) */
+    @keyframes pop-in {
+      from { opacity: 0; transform: translateY(6px) scale(.99); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    .pop-in{ animation: pop-in .36s cubic-bezier(.22,.9,.32,1) both; animation-delay: var(--delay, 0ms); }
+  </style>
 </head>
 <body>
-    <header><h1>Books</h1><a class="back-btn" href="http://192.168.4.1/menu">← Back to Menu</a></header>
+  <header>
+    <h1>Books</h1>
+    <a class="back-btn" href="http://192.168.4.1/menu">← Back to Menu</a>
+  </header>
 
-    <!-- Toolbar -->
-    <div class="toolbar">
-        <input id="searchInput" type="search" placeholder="Search books…" aria-label="Search books">
-        <select id="sortSelect" aria-label="Sort books">
-            <option value="nameAsc">A → Z</option>
-            <option value="nameDesc">Z → A</option>
-        </select>
-        <button class="view-btn"  data-size="small"  title="Compact view">🔳</button>
-        <button class="view-btn active" data-size="medium" title="Comfort view">🔲</button>
-        <button class="view-btn"  data-size="large"  title="Gallery view">⬜</button>
+  <div class="toolbar">
+    <!-- added class "search-input" so dark-mode helper can force white background + black text -->
+    <input id="searchInput" class="search-input" type="search" placeholder="Search books…" aria-label="Search books">
+    <select id="sortSelect" aria-label="Sort books">
+      <option value="nameAsc">A → Z</option>
+      <option value="nameDesc">Z → A</option>
+    </select>
+    <button class="view-btn" data-size="small" title="Compact view">🔳</button>
+    <button class="view-btn active" data-size="medium" title="Comfort view">🔲</button>
+    <button class="view-btn" data-size="large" title="Gallery view">⬜</button>
+  </div>
+
+  <main>
+    <div class="grid-wrapper">
+      <div id="grid" class="media-grid medium" aria-live="polite" role="list"></div>
     </div>
+  </main>
 
-    <!-- Grid -->
-    <main><div class="grid-wrapper"><div id="grid" class="media-grid medium"></div></div></main>
-
-    <!-- View / Download Modal -->
-    <div id="modal" class="modal" onclick="closeModal(event)">
-        <div class="modal-content" onclick="event.stopPropagation();">
-            <h2 id="modalTitle">What would you like to do?</h2>
-            <button id="viewButton">View in Browser</button>
-            <button id="downloadButton">Download</button>
-            <p id="modalNote" style="margin-top:0.5rem;color:#555;font-size:.9rem;display:none;"></p>
-        </div>
+  <!-- series / dir listing modal -->
+  <div id="listModal" class="list-modal" onclick="if(event.target===this) closeListModal()">
+    <div class="list-modal-content" onclick="event.stopPropagation()">
+      <h2 id="listModalTitle">Contents</h2>
+      <div id="listContainer" class="list" role="list"></div>
+      <div style="margin-top:8px">
+        <button id="listCloseBtn" class="btn-muted">Close</button>
+      </div>
     </div>
+  </div>
 
-    <footer>© <span id="year"></span> Jcorp Nomad</footer>
+  <!-- action modal (view/download) -->
+  <div id="actionModal" class="modal" onclick="if(event.target===this) closeActionModal()">
+    <div class="modal-content" onclick="event.stopPropagation()">
+      <h2 id="actionTitle">What do you want to do?</h2>
+      <div id="actionSub" style="color:#444;margin-bottom:8px"></div>
 
-    <script>
-        document.getElementById('year').textContent = new Date().getFullYear();
+      <div id="actionButtons" style="display:flex;gap:8px;flex-direction:column">
+        <button id="viewButton" class="btn" aria-label="Primary action"></button>
+        <button id="downloadButton" class="btn-muted" aria-label="Download file">Download</button>
+      </div>
 
-        const searchInput = document.getElementById('searchInput');
-        const sortSelect  = document.getElementById('sortSelect');
-        const gridElement = document.getElementById('grid');
-        const viewButtons = document.querySelectorAll('.view-btn');
-        const modal       = document.getElementById('modal');
-        const viewBtn     = document.getElementById('viewButton');
-        const downloadBtn = document.getElementById('downloadButton');
+      <div style="margin-top:8px">
+        <button id="actionCancelBtn" class="btn-muted">Cancel</button>
+      </div>
+    </div>
+  </div>
 
-        const fileExt = f=>f.slice(f.lastIndexOf('.')).toLowerCase();
-        const booksKey = 'nomadBooksSize';
-        let books = [], filtered = [], debounceTimer = null, currentBook = null;
+  <footer>© <span id="year"></span> Jcorp Nomad</footer>
 
-        let currentSize = localStorage.getItem(booksKey) || 'medium';
-        function setViewSize(size){
-            currentSize = size;
-            viewButtons.forEach(btn=>btn.classList.toggle('active', btn.dataset.size===size));
-            gridElement.className = `media-grid ${size}`;
-            localStorage.setItem(booksKey, size);
+<script>
+/* CONFIG */
+const ROOT = '/Books';
+const INDEX_ENDPOINT = '/api/index';
+const BOOK_EXTS = ['.pdf','.epub','.mobi','.azw3','.cbz','.cbr','.cbt','.cb7','.djvu','.txt'];
+const IMAGE_EXTS = ['.jpg','.jpeg','.png','.webp','.avif'];
+
+/* THEME + HASH CONFIG (NEW) */
+const THEME_KEY = 'nomad_dark_mode'; // shared key with menu
+function applyThemeFlag(dark){
+  if(dark) document.body.classList.add('dark');
+  else document.body.classList.remove('dark');
+
+  // Keep search readable: force white background + black text for search inputs if desired
+  const s = document.querySelector('.search-input');
+  if(s){ try { s.style.background = '#fff'; s.style.color = '#000'; } catch(e){} }
+}
+(function initThemeFromStorage(){
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    applyThemeFlag(saved === 'true');
+  } catch(e){
+    applyThemeFlag(false);
+  }
+})();
+window.addEventListener('storage', (ev) => { if(ev.key === THEME_KEY) applyThemeFlag(ev.newValue === 'true'); });
+// optional toggler (not used by this page UI, but handy if you later add a toggle)
+function toggleTheme(){
+  const isDark = document.body.classList.toggle('dark');
+  try { localStorage.setItem(THEME_KEY, isDark ? 'true' : 'false'); } catch(e){}
+}
+
+/* STATE */
+let library = [];     // {name, dir, cover, type:'dir'|'file', fileEntry?}
+let filtered = [];
+let currentSize = localStorage.getItem('nomadBooksSize') || 'medium';
+let currentItem = null;
+const ANIM_KEY = 'nomadBooksAnimated_v1';
+
+const gridEl = document.getElementById('grid');
+const searchInput = document.getElementById('searchInput');
+const sortSelect  = document.getElementById('sortSelect');
+const viewButtons  = document.querySelectorAll('.view-btn');
+
+const listModal = document.getElementById('listModal');
+const listModalTitle = document.getElementById('listModalTitle');
+const listContainer = document.getElementById('listContainer');
+const listCloseBtn = document.getElementById('listCloseBtn');
+
+const actionModal = document.getElementById('actionModal');
+const actionTitle = document.getElementById('actionTitle');
+const actionSub = document.getElementById('actionSub');
+const viewButton = document.getElementById('viewButton');
+const downloadButton = document.getElementById('downloadButton');
+const actionCancelBtn = document.getElementById('actionCancelBtn');
+
+document.getElementById('year').textContent = new Date().getFullYear();
+
+/* HELPERS */
+function normalizePath(p){ if(!p) return '/'; p=String(p); if(!p.startsWith('/')) p='/' + p; while(p.length>1 && p.endsWith('/')) p=p.slice(0,-1); return p; }
+function ext(name){ const i = name.lastIndexOf('.'); return i>=0? name.slice(i).toLowerCase() : ''; }
+function isBookName(n){ return BOOK_EXTS.includes(ext(n)); }
+function isImageName(n){ return IMAGE_EXTS.includes(ext(n)); }
+function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function prettify(filename){ if(!filename) return ''; let n = filename.replace(/\.[^/.]+$/,''); let t = n.replace(/[_\.]+/g,' ').trim(); t = t.replace(/\s*\(?\d{4}\)?\s*$/,'').trim(); return t || filename; }
+
+/* Return direct URL to file path (use encodeURI to preserve slashes) */
+function fileUrlDirect(path){ if(!path) return ''; return encodeURI(path); }
+
+/* create a downloadable click anchor */
+function downloadFile(path, filename){
+  const a = document.createElement('a');
+  a.href = fileUrlDirect(path);
+  a.download = filename || path.split('/').pop();
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+/* Robust NDJSON fetch & parse */
+async function fetchIndex(path){
+  const url = `${INDEX_ENDPOINT}?path=${encodeURIComponent(normalizePath(path))}`;
+  const res = await fetch(url);
+  if(!res.ok) throw new Error('index fetch failed '+res.status);
+  const text = await res.text();
+  const lines = text.split('\n').filter(Boolean);
+  const header = lines.length ? (() => { try{ return JSON.parse(lines[0]); } catch(e){ console.warn('index header parse failed', lines[0]); return null; } })() : null;
+  const entries = [];
+  for(let i=1;i<lines.length;i++){
+    const line = lines[i];
+    try {
+      entries.push(JSON.parse(line));
+    } catch(err){
+      const brace = line.indexOf('{');
+      if(brace >= 0){
+        try { entries.push(JSON.parse(line.slice(brace))); continue; } catch(e2){ /* fall through */ }
+      }
+      console.warn('index line parse failed', line);
+    }
+  }
+  return { header, entries };
+}
+
+/* Build top-level library from /Books */
+async function buildLibrary(){
+  const out = [];
+  const rootResp = await fetchIndex(ROOT);
+
+  // map cover candidates in root
+  const rootImages = new Map();
+  for(const e of rootResp.entries){
+    if(e.t === 'f' && isImageName(e.n)){
+      rootImages.set(e.n.replace(/\.[^/.]+$/,'').toLowerCase(), normalizePath((ROOT === '/' ? '' : ROOT) + '/' + e.n));
+    }
+  }
+
+  for(const e of rootResp.entries){
+    if(e.t === 'd'){
+      const seriesName = e.n;
+      const dir = normalizePath((ROOT === '/' ? '' : ROOT) + '/' + seriesName);
+      let cover = null;
+      const variants = [ seriesName.toLowerCase(), seriesName.toLowerCase().replace(/\s+/g,'-'), seriesName.toLowerCase().replace(/\s+/g,'_') ];
+      for(const v of variants){ if(rootImages.has(v)){ cover = rootImages.get(v); break; } }
+      if(!cover) ['poster','cover','folder','art'].forEach(k => { if(!cover && rootImages.has(k)) cover = rootImages.get(k); });
+      out.push({ name: seriesName.replace(/[_\.]+/g,' ').trim(), dir, cover, type:'dir' });
+    } else if(e.t === 'f'){
+      if(isBookName(e.n)){
+        const p = normalizePath((ROOT === '/' ? '' : ROOT) + '/' + e.n);
+        const base = e.n.replace(/\.[^/.]+$/,'').toLowerCase();
+        const cover = rootImages.has(base) ? rootImages.get(base) : null;
+        out.push({ name: prettify(e.n), dir:null, cover, type:'file', fileEntry: { name: e.n, path: p, sz: e.sz||0, mt: e.mt||0 } });
+      }
+    } else {
+      // handle flattened names like "Series/Book.pdf"
+      if(e.n && e.n.includes('/') && isBookName(e.n)){
+        const top = e.n.split('/')[0];
+        const dir = normalizePath((ROOT === '/' ? '' : ROOT) + '/' + top);
+        if(!out.some(x=>x.type==='dir' && x.dir===dir)){
+          out.push({ name: top.replace(/[_\.]+/g,' ').trim(), dir, cover:null, type:'dir' });
         }
-        setViewSize(currentSize);
-        viewButtons.forEach(btn=>btn.addEventListener('click',()=>setViewSize(btn.dataset.size)));
+      }
+    }
+  }
 
-        async function init(){
-            try{
-                const res = await fetch('/media.json');
-                const json = await res.json();
-                const raw  = json.books || json.Books || [];
-                books = raw.map(b=>({
-                    name : b.name  || b.title || 'Unknown',
-                    cover: b.cover || b.thumbnail || 'placeholder.jpg',
-                    path : b.file  || b.path || b.url || ''
-                })).filter(b=>b.path);
-                applyFilter('');
-            }catch(err){
-                console.error('Media load error', err);
-                gridElement.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--primary-dark);">Unable to load content.</p>';
-            }
-        }
+  out.sort((a,b)=>a.name.localeCompare(b.name));
+  return out;
+}
 
-        function applyFilter(term){
-            const lower = term.trim().toLowerCase();
-            filtered = !lower ? [...books] : books.filter(b=>b.name.toLowerCase().includes(lower));
-            applySort(sortSelect.value);
-        }
-        function applySort(mode){
-            if(mode==='nameDesc'){filtered.sort((a,b)=>b.name.localeCompare(a.name));}
-            else{filtered.sort((a,b)=>a.name.localeCompare(b.name));}
-            renderGrid();
-        }
-        function renderGrid(){
-            gridElement.className = `media-grid ${currentSize}`;
-            const frag=document.createDocumentFragment();
-            filtered.forEach(item=>{
-                const card=document.createElement('div');
-                card.className='media-card';
-                card.innerHTML=`<img class="media-thumb" loading="lazy" src="${item.cover}" alt="${item.name}">`;
-                card.addEventListener('click',()=>showBookOptions(item));
-                frag.appendChild(card);
-            });
-            gridElement.innerHTML='';
-            gridElement.appendChild(frag);
-        }
+/* Load files in a subdir */
+async function loadDirContents(dir){
+  try{
+    const resp = await fetchIndex(dir);
+    const files = [];
+    for(const e of resp.entries){
+      if(e.t === 'f' && isBookName(e.n)){
+        files.push({ name: prettify(e.n), path: normalizePath(dir + '/' + e.n), sz: e.sz||0, mt: e.mt||0 });
+      } else if(e.t === 'd'){
+        files.push({ name: e.n, path: normalizePath(dir + '/' + e.n), isDir:true });
+      } else if(e.n && e.n.includes('/') && isBookName(e.n)){
+        files.push({ name: prettify(e.n.split('/').pop()), path: normalizePath(dir + '/' + e.n), sz: e.sz||0, mt:e.mt||0 });
+      }
+    }
+    files.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+    return { header: resp.header, files };
+  }catch(err){
+    console.warn('loadDirContents failed', dir, err);
+    return { header:null, files:[] };
+  }
+}
 
-        function showBookOptions(book){
-            currentBook = book;
-            const ext     = fileExt(book.path);
-            const noteEl  = document.getElementById('modalNote');
-            const titleEl = document.getElementById('modalTitle');
+/* RENDER */
+function setViewSize(size){
+  currentSize = size;
+  viewButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.size === size));
+  gridEl.className = `media-grid ${size}`;
+  localStorage.setItem('nomadBooksSize', size);
+}
+setViewSize(currentSize);
+viewButtons.forEach(btn=>btn.addEventListener('click', ()=> setViewSize(btn.dataset.size)));
 
-            titleEl.textContent = `What would you like to do with "${book.name}"?`;
+function renderGrid(){
+  gridEl.className = `media-grid ${currentSize}`;
+  const frag = document.createDocumentFragment();
+  if(filtered.length === 0){
+    gridEl.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--primary-dark);padding:12px">No books found.</p>';
+    return;
+  }
 
-            if (ext === '.epub') {
-            // EPUB-specific UI
-            viewBtn.textContent = 'Not supported';
-            viewBtn.disabled   = true;
-            viewBtn.title      = 'EPUBs need to be downloaded and read in a separate app';
+  const shouldAnimate = !localStorage.getItem(ANIM_KEY);
 
-            // Show disclaimer
-            noteEl.textContent   = 'In‑browser reading of EPUBs is not supported. Please download and open in an EPUB reader.';
-            noteEl.style.display = 'block';
+  filtered.forEach((item, idx) => {
+    const card = document.createElement('div');
+    card.className = 'media-card';
+    card.setAttribute('role','listitem');
+    card.setAttribute('aria-label', item.name || '');
 
-            } else {
-            // Other files (PDF, etc.)
-            viewBtn.textContent = 'View in Browser';
-            viewBtn.disabled   = false;
-            viewBtn.title      = '';
+    const coverPath = item.cover || '';
+    const overlay = `<div class="overlay-title">${escapeHtml(item.name)}</div>`;
+    const imgHTML = coverPath ? `<img class="media-thumb" loading="lazy" alt="${escapeHtml(item.name)}">` : '';
 
-            // Hide disclaimer
-            noteEl.textContent   = '';
-            noteEl.style.display = 'none';
-            }
+    card.innerHTML = `
+      <div class="thumb-wrapper" aria-hidden="false">
+        ${overlay}
+        ${imgHTML}
+      </div>
+    `;
 
-            downloadBtn.textContent = 'Download';    // ensure download label
-            modal.style.display     = 'flex';
-        }
+    const img = card.querySelector('img');
+    const overlayEl = card.querySelector('.overlay-title');
 
-        function closeModal(evt){if(evt.target===modal){modal.style.display='none';}}
-        viewBtn.onclick = ()=>{ 
-        if (!currentBook) return;
+    if(img && coverPath){
+      img.addEventListener('load', ()=>{ img.style.opacity = '1'; if(overlayEl) overlayEl.style.display = 'none'; });
+      img.addEventListener('error', ()=>{ img.style.display = 'none'; if(overlayEl) overlayEl.style.display = 'flex'; });
+      img.src = fileUrlDirect(coverPath);
+      setTimeout(()=>{ if(img.complete && img.naturalWidth && img.naturalHeight){ img.style.opacity='1'; if(overlayEl) overlayEl.style.display='none'; } }, 400);
+    } else {
+      if(overlayEl) overlayEl.style.display = 'flex';
+    }
 
-        const ext = fileExt(currentBook.path);
-        if (ext !== '.epub') {
-            openBook(currentBook);
-        }
-        modal.style.display = 'none';
-        };
-        downloadBtn.onclick = ()=>{ if(currentBook){ downloadBook(currentBook);} modal.style.display='none'; };
+    card.addEventListener('click', async () => {
+      if(item.type === 'dir') await openListModal(item);
+      else openActionModal(item.fileEntry);
+    });
 
-        function openBook(book){
-            const ext = fileExt(book.path);
-            let url;
+    if(shouldAnimate){
+      card.classList.add('pop-in');
+      const delay = Math.min(6000, idx * 55);
+      card.style.setProperty('--delay', `${delay}ms`);
+    }
 
-            if (ext === '.epub') {
-         
-            url = `/reader.html?file=${encodeURIComponent(book.path)}`;
-            } else {
-            // PDF (and all others) direct file URL
-            url = book.path;
-            }
+    frag.appendChild(card);
+  });
 
-            window.open(url, '_blank');
-        }
-        function downloadBook(book) {
-            const a = document.createElement('a');
-            a.href = book.path;
+  gridEl.innerHTML = '';
+  gridEl.appendChild(frag);
 
-            let filename = book.path.substring(book.path.lastIndexOf('/') + 1);
+  if(shouldAnimate){
+    try{ localStorage.setItem(ANIM_KEY, '1'); }catch(e){ /* ignore storage failures */ }
+  }
+}
 
-            a.download = filename;  // Force download with proper filename and extension
-            a.click();
-        }
+/* MODALS: directory list & action modal behavior */
+async function openListModal(item){
+  listModalTitle.textContent = item.name;
+  listContainer.innerHTML = '<p style="padding:12px;color:var(--muted)">Loading…</p>';
+  listModal.style.display = 'flex';
 
-        searchInput.addEventListener('input', e=>{clearTimeout(debounceTimer); debounceTimer = setTimeout(()=>applyFilter(e.target.value),150);} );
-        sortSelect.addEventListener('change', ()=>applySort(sortSelect.value));
+  const resp = await loadDirContents(item.dir);
+  const files = resp.files || [];
+  if(files.length === 0){
+    listContainer.innerHTML = '<p style="padding:12px;color:var(--muted)">No files found in this directory.</p>';
+    return;
+  }
 
-        init();
-    </script>
+  const frag = document.createDocumentFragment();
+  const first = files.find(f=>!f.isDir) || files[0];
+  if(first){
+    const topBtn = document.createElement('button');
+    topBtn.className = 'btn';
+    topBtn.style.width = '100%';
+    topBtn.style.marginBottom = '8px';
+    topBtn.textContent = first.name;
+    topBtn.onclick = ()=> {
+      listModal.style.display = 'none';
+      if(first.isDir) openListModal({ name:first.name, dir:first.path });
+      else openActionModal({ name:first.name, path:first.path });
+    };
+    frag.appendChild(topBtn);
+  }
+
+  for(const f of files){
+    const row = document.createElement('div'); row.className='item';
+    const title = document.createElement('div'); title.className='title';
+    title.innerHTML = `<div style="font-weight:700">${escapeHtml(f.name)}</div><div class="meta">${f.isDir ? 'Folder' : ''}</div>`;
+
+    const buttons = document.createElement('div'); buttons.className='row-buttons';
+    if(f.isDir){
+      const openBtn = document.createElement('button');
+      openBtn.textContent = 'Open';
+      openBtn.className = 'btn small';
+      openBtn.onclick = ()=> { listModal.style.display = 'none'; openListModal({name:f.name, dir:f.path}); };
+      buttons.appendChild(openBtn);
+    } else {
+      const fext = ext(f.path).toLowerCase();
+      if(fext === '.pdf'){
+        const openBtn = document.createElement('button');
+        openBtn.textContent = 'Open';
+        openBtn.className = 'btn small';
+        openBtn.onclick = ()=> { listModal.style.display = 'none'; window.open(fileUrlDirect(f.path), '_blank'); };
+        buttons.appendChild(openBtn);
+
+        const dlBtn = document.createElement('button');
+        dlBtn.textContent = 'Download';
+        dlBtn.className = 'btn-muted small';
+        dlBtn.onclick = ()=> { downloadFile(f.path, f.name); };
+        buttons.appendChild(dlBtn);
+      } else {
+        const dlBtn = document.createElement('button');
+        dlBtn.textContent = 'Download';
+        dlBtn.className = 'btn small';
+        dlBtn.onclick = ()=> { downloadFile(f.path, f.name); };
+        buttons.appendChild(dlBtn);
+      }
+    }
+
+    row.appendChild(title); row.appendChild(buttons);
+    frag.appendChild(row);
+  }
+
+  listContainer.innerHTML = '';
+  listContainer.appendChild(frag);
+}
+function closeListModal(){ listModal.style.display = 'none'; }
+
+listCloseBtn.addEventListener('click', closeListModal);
+
+function openActionModal(fileObj){
+  const file = (fileObj.fileEntry) ? fileObj.fileEntry : fileObj;
+  if(!file || !file.path) return;
+  currentItem = file;
+  actionTitle.textContent = file.name || file.path.split('/').pop();
+  actionSub.textContent = '';
+
+  const extname = ext(file.path).toLowerCase();
+
+  viewButton.style.display = 'none';
+  downloadButton.style.display = '';
+
+  if(extname === '.pdf'){
+    viewButton.textContent = 'View in Browser';
+    viewButton.className = 'btn';
+    viewButton.style.display = '';
+    viewButton.onclick = ()=> { window.open(fileUrlDirect(file.path), '_blank'); closeActionModal(); };
+
+    downloadButton.textContent = 'Download';
+    downloadButton.className = 'btn-muted';
+    downloadButton.onclick = ()=> { downloadFile(file.path, file.name); closeActionModal(); };
+
+  } else {
+    viewButton.style.display = 'none';
+    downloadButton.textContent = 'Download';
+    downloadButton.className = 'btn';
+    downloadButton.onclick = ()=> { downloadFile(file.path, file.name); closeActionModal(); };
+  }
+
+  actionModal.style.display = 'flex';
+}
+function closeActionModal(){ actionModal.style.display = 'none'; }
+
+actionCancelBtn.addEventListener('click', closeActionModal);
+
+/* SEARCH / SORT */
+function applyFilter(term=''){
+  const lower = (term||'').trim().toLowerCase();
+  filtered = !lower ? library.slice() : library.filter(i => (i.name||'').toLowerCase().includes(lower));
+  applySort(sortSelect.value || 'nameAsc');
+}
+function applySort(mode='nameAsc'){
+  filtered.sort((a,b) => mode === 'nameDesc' ? b.name.localeCompare(a.name) : a.name.localeCompare(b.name));
+  renderGrid();
+}
+
+/* INDEX WATCH & LOAD LIBRARY */
+async function loadLibrary(){
+  try{
+    const list = await buildLibrary();
+    library = list;
+    filtered = library.slice();
+    renderGrid();
+    return;
+  } catch(err){
+    console.error('loadLibrary failed (NDJSON required)', err);
+    gridEl.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--primary-dark);padding:12px">Unable to load library (index missing or malformed).</p>';
+    library=[]; filtered=[];
+  }
+}
+
+/* simple index change watcher (refreshes library if header.sig changes) */
+async function checkIndex(){
+  try {
+    const res = await fetch(`${INDEX_ENDPOINT}?path=${encodeURIComponent(ROOT)}`);
+    if(!res.ok) return;
+    const text = await res.text();
+    const headerLine = text.split('\n')[0];
+    if(headerLine){
+      const header = (()=>{ try{ return JSON.parse(headerLine); }catch(e){return null;} })();
+      if(header && header.sig){
+        await loadLibrary();
+      }
+    }
+  } catch(e){}
+}
+
+/* Keyboard: close modals on Escape for accessibility */
+document.addEventListener('keydown', (ev) => {
+  if(ev.key === 'Escape'){
+    closeActionModal();
+    closeListModal();
+  }
+});
+
+/* -----------------------
+   HASH PARSING & HANDLING
+   -----------------------
+   Supports:
+     #open=<encodedPath>   -> open a folder or file (opens list modal or action modal)
+     #download=<encodedPath> -> trigger download of file immediately
+   Example:
+     /books#open=%2FBooks%2FMySeries
+     /books#open=%2FBooks%2FMySeries%2FThe%20Book.pdf
+     /books#download=%2FBooks%2FMySeries%2FThe%20Book.pdf
+*/
+function getHashParam(){
+  const h = (location.hash || '').replace(/^#/,'');
+  if(!h) return { action:null, path:null };
+  const [k, ...rest] = h.split('=');
+  const v = rest.length ? rest.join('=') : '';
+  try { return { action: k || null, path: v ? decodeURIComponent(v) : null }; } catch(e){ return { action: k || null, path: v || null }; }
+}
+
+/* tries to find a top-level library item by path or dir; returns object or null */
+function findTopLevelItemByPath(want){
+  want = normalizePath(want);
+  // try direct file entries
+  const topFile = library.find(i => i.type === 'file' && normalizePath(i.fileEntry.path) === want);
+  if(topFile) return topFile;
+  // try dir matches
+  const dirItem = library.find(i => i.type === 'dir' && normalizePath(i.dir) === want);
+  if(dirItem) return dirItem;
+  // try basename match for directories (e.g. /Books/MySeries)
+  const base = want.split('/').pop().toLowerCase();
+  const byBaseDir = library.find(i => i.type === 'dir' && normalizePath(i.dir).split('/').pop().toLowerCase() === base);
+  if(byBaseDir) return byBaseDir;
+  // try top-level file basename match
+  const byBaseFile = library.find(i => i.type === 'file' && (i.fileEntry && (i.fileEntry.path || '').split('/').pop().toLowerCase() === base));
+  if(byBaseFile) return byBaseFile;
+  return null;
+}
+
+/* open a show/dir or file found by the hash */
+async function openBookFromHash(hashObj){
+  if(!hashObj || !hashObj.path) return;
+  const want = normalizePath(hashObj.path);
+
+  // 1) quick top-level match (file or dir)
+  const top = findTopLevelItemByPath(want);
+  if(top){
+    if(top.type === 'dir'){
+      // open list modal for dir
+      await openListModal(top);
+      return;
+    } else if(top.type === 'file'){
+      // action modal or download
+      if(hashObj.action === 'download'){
+        downloadFile(top.fileEntry.path, top.fileEntry.name);
+        return;
+      }
+      openActionModal(top.fileEntry);
+      return;
+    }
+  }
+
+  // 2) file might live inside a directory: search each dir (loads dir indexes as necessary)
+  for(const item of library){
+    if(item.type !== 'dir') continue;
+    // if want path doesn't start with this dir, skip quick (but still ok to check if want basename matches)
+    const dirPrefix = normalizePath(item.dir) + '/';
+    // load dir contents to search
+    try {
+      const { files } = await loadDirContents(item.dir);
+      // exact path match
+      const found = files.find(f => normalizePath(f.path) === want);
+      if(found){
+        if(hashObj.action === 'download'){ downloadFile(found.path, found.name); return; }
+        openActionModal({ name: found.name, path: found.path });
+        return;
+      }
+      // basename fallback: compare last segment
+      const wantBase = want.split('/').pop().toLowerCase();
+      const foundByBase = files.find(f => (f.path || '').split('/').pop().toLowerCase() === wantBase);
+      if(foundByBase){
+        if(hashObj.action === 'download'){ downloadFile(foundByBase.path, foundByBase.name); return; }
+        openActionModal({ name: foundByBase.name, path: foundByBase.path });
+        return;
+      }
+      // If want is inside this directory path (string startsWith), open the directory listing as fallback
+      if(want.startsWith(dirPrefix) || normalizePath(item.dir).split('/').pop().toLowerCase() === want.split('/').pop().toLowerCase()){
+        // open list modal so user can pick (useful when direct file not found)
+        await openListModal(item);
+        return;
+      }
+    } catch(err){
+      // ignore per-dir errors and continue
+      console.warn('dir search failed for', item.dir, err);
+    }
+  }
+
+  // 3) not found — log
+  console.warn('book not found for hash', want);
+}
+
+/* respond to hash changes */
+window.addEventListener('hashchange', () => handleHashNavigation(getHashParam()));
+function handleHashNavigation(hashObj){
+  if(!hashObj) return;
+  if(hashObj.action === 'open' || hashObj.action === 'download'){
+    openBookFromHash(hashObj);
+  }
+}
+
+/* BOOT + UI wiring */
+setViewSize(currentSize);
+searchInput.addEventListener('input', e => { clearTimeout(window.__debounce); window.__debounce = setTimeout(()=> applyFilter(e.target.value), 150); });
+sortSelect.addEventListener('change', ()=> applySort(sortSelect.value));
+viewButtons.forEach(btn=>btn.addEventListener('click', ()=> setViewSize(btn.dataset.size)));
+listCloseBtn.addEventListener('click', closeListModal);
+
+/* LOAD & START */
+(async function init(){
+  try{
+    await loadLibrary();
+
+    // handle a hash that may be present when the page first loads
+    try { await handleHashNavigation(getHashParam()); } catch(e){ console.warn('initial hash handling failed', e); }
+
+  } catch(e){
+    console.error('init failed', e);
+  }
+  setInterval(checkIndex, 30000);
+})();
+</script>
 </body>
 </html>
