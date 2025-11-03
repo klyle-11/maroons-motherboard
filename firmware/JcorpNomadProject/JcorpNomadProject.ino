@@ -15,6 +15,7 @@
 #include "ui.h"
 #include "RGB_lamp.h"
 #include <SPIFFS.h>
+#include <Preferences.h>
 #include "esp_wifi.h"
 #include <esp_task_wdt.h>  // Add watchdog include
 #if defined(ARDUINO_ARCH_ESP32)
@@ -2379,41 +2380,51 @@ static inline bool isBucketRootPath(const String &p) {
   return (nextSlash < 0);
 }
 void enqueueIndexUpdateForPath(const String &path) {
-  // Coalesce quickly repeated requests for the same path.
-  if (!shouldCoalesceIndexRequest(path)) {
-    Serial.printf("[Index] Coalesced duplicate index request for '%s'\n", path.c_str());
+  // For subdirectories of /Music or /Shows, redirect to bucket root BEFORE coalescing
+  String targetPath = path;
+  if (path.startsWith("/Music/")) {
+    targetPath = "/Music";
+    Serial.printf("[Index] Redirecting '%s' -> '%s' (Music bucket)\n", path.c_str(), targetPath.c_str());
+  } else if (path.startsWith("/Shows/")) {
+    targetPath = "/Shows";
+    Serial.printf("[Index] Redirecting '%s' -> '%s' (Shows bucket)\n", path.c_str(), targetPath.c_str());
+  }
+
+  // Coalesce quickly repeated requests for the TARGET path (after redirection)
+  if (!shouldCoalesceIndexRequest(targetPath)) {
+    Serial.printf("[Index] Coalesced duplicate index request for '%s'\n", targetPath.c_str());
     return;
   }
 
   // Decide target index file from path (bucket or nested)
   String out;
-  if (isBucketRootPath(path)) {
-    String bucket = path == "/" ? "root" : path.substring(1);
+  if (isBucketRootPath(targetPath)) {
+    String bucket = targetPath == "/" ? "root" : targetPath.substring(1);
     out = bucket + ".index.ndjson";
   } else {
-    out = encodeIndexName(path) + ".nested.ndjson";
+    out = encodeIndexName(targetPath) + ".nested.ndjson";
   }
 
   // Allocate message and push pointer onto queue
-  IndexBuildArgs *msg = new IndexBuildArgs{ path, out };
+  IndexBuildArgs *msg = new IndexBuildArgs{ targetPath, out };
 
   // Try to enqueue quickly (short timeout)
   if (indexQueue && xQueueSend(indexQueue, &msg, pdMS_TO_TICKS(10)) == pdTRUE) {
     // enqueued — good
-    Serial.printf("[Index] Enqueued index update for '%s' -> %s\n", path.c_str(), out.c_str());
+    Serial.printf("[Index] Enqueued index update for '%s' -> %s\n", targetPath.c_str(), out.c_str());
     return;
   }
 
   // If queue doesn't exist or is full, attempt inline build as a fallback
   if (enoughHeapForIndex()) {
-    Serial.printf("[Index] Queue unavailable; running inline index for '%s'\n", path.c_str());
-    writeNDIndexForDir(path, out);
+    Serial.printf("[Index] Queue unavailable; running inline index for '%s'\n", targetPath.c_str());
+    writeNDIndexForDir(targetPath, out);
     delete msg;
     return;
   }
 
   // Low-memory / queue-full: log and drop (coalesce will prevent spam).
-  Serial.printf("[Index] Queue full & low memory; unable to index '%s' now\n", path.c_str());
+  Serial.printf("[Index] Queue full & low memory; unable to index '%s' now\n", targetPath.c_str());
   delete msg;
 }
 
@@ -4074,29 +4085,35 @@ server.on("/settings", HTTP_POST, [](AsyncWebServerRequest *request){
   server.on("/cpu-temp", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "application/json", String("{\"temperature\":") + currentTempC + "}");
   });
-  // GET /api/index -> serves nested index files (NDJSON format) or builds them
+  // GET /api/index -> serves bucket index for Music/Shows, nested for others
   server.on("/api/index", HTTP_GET, [](AsyncWebServerRequest *request){
     String path = "/";
     if (request->hasParam("path")) path = normalizePath(request->getParam("path")->value());
 
-    // Determine the correct index filename based on whether it's a bucket root
+    // For Music/Shows paths (including subdirectories), always serve the bucket root index
+    String indexPath = path;
+    if (path == "/Music" || path.startsWith("/Music/")) {
+      indexPath = "/Music";
+    } else if (path == "/Shows" || path.startsWith("/Shows/")) {
+      indexPath = "/Shows";
+    }
+
+    // Determine the correct index filename
     String indexFile;
-    if (path == "/" || (path.startsWith("/") && path.indexOf('/', 1) < 0)) {
-      // Bucket root path (e.g., "/", "/Movies", "/Shows")
-      String bucket = path == "/" ? "root" : path.substring(1);
+    if (indexPath == "/" || (indexPath.startsWith("/") && indexPath.indexOf('/', 1) < 0)) {
+      // Bucket root path (e.g., "/", "/Music", "/Shows")
+      String bucket = indexPath == "/" ? "root" : indexPath.substring(1);
       indexFile = bucket + ".index.ndjson";
     } else {
-      // Nested path (e.g., "/Movies/SomeMovie")
-      String enc = encodeIndexName(path);
+      // Nested path for non-Music/Shows directories
+      String enc = encodeIndexName(indexPath);
       indexFile = enc + ".nested.ndjson";
     }
 
     String fullPath = String(INDEX_DIR) + "/" + indexFile;
-
-    // Ensure index directory exists
     ensureIndexDir();
 
-    // If index exists already, serve it
+    // If index exists, serve it
     if (SD_MMC.exists(fullPath)) {
       AsyncWebServerResponse *resp = request->beginResponse(SD_MMC, fullPath, "application/x-ndjson");
       resp->addHeader("Cache-Control", "no-cache, no-store");
@@ -4104,12 +4121,17 @@ server.on("/settings", HTTP_POST, [](AsyncWebServerRequest *request){
       return;
     }
 
-    // Always enqueue to background worker - no inline builds (prevents blocking)
-    Serial.printf("[Index] Request for '%s' - index missing, enqueuing to background worker\n", path.c_str());
-    enqueueIndexUpdateForPath(path);
+    // For bucket roots, enqueue build if missing
+    if (indexPath == "/" || (indexPath.startsWith("/") && indexPath.indexOf('/', 1) < 0)) {
+      Serial.printf("[Index] Request for '%s' - index missing, enqueuing\n", indexPath.c_str());
+      enqueueIndexUpdateForPath(indexPath);
+      request->send(202, "application/json",
+        "{\"status\":\"building\",\"path\":\"" + indexPath + "\"}");
+      return;
+    }
 
-    request->send(202, "application/json",
-    "{\"status\":\"building\",\"scope\":\"nested\",\"path\":\"" + path + "\"}");
+    // For other nested paths, return 404
+    request->send(404, "application/json", "{\"error\":\"Index not found\"}");
   });
 
   // GET /api/index-nested -> serves nested index files (JSON format) or builds them
@@ -4279,24 +4301,15 @@ server.on("/settings", HTTP_POST, [](AsyncWebServerRequest *request){
         // build Shows bucket plus root
         buildBucketIndex("/Shows");
         buildBucketIndex("/");
+      } else if(p == "/Music" || p.startsWith("/Music/")){
+        // For any Music path, rebuild the entire Music bucket
+        buildBucketIndex("/Music");
+      } else if(p.startsWith("/Shows/")){
+        // For any Shows path, rebuild the entire Shows bucket
+        buildBucketIndex("/Shows");
       } else {
-        // build bucket for requested path
-        // determine file name: if p is /Shows/ShowName -> produce per-show nested file
-        String token = p;
-        if(token.startsWith("/")) token = token.substring(1);
-        String outFile;
-        if(token.indexOf('/') >= 0){
-          // nested show: e.g. "Shows/GravityFalls" => "Shows__GravityFalls.nested.ndjson"
-          int slashPos = token.indexOf('/');
-          String bucket = token.substring(0, slashPos);
-          String name = token.substring(slashPos+1);
-          outFile = bucket + "__" + sanitizeToken(name) + ".nested.ndjson";
-          writeNDIndexForDir(p, outFile);
-        } else {
-          // top-level bucket
-          String fname = token + ".index.ndjson";
-          writeNDIndexForDir(p, fname);
-        }
+        // For other top-level buckets, rebuild that bucket
+        buildBucketIndex(p);
       }
 
       Serial.printf("[ReindexTask] finished %s\n", p.c_str());
