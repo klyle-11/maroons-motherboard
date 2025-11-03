@@ -1445,7 +1445,6 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
 
   if (isMediaStream && contentLength > 10000) {
     mediaStreamingActive = true;
-    lastStreamActivity = millis();
     shutdownBackgroundTasksForStreaming(); 
   }
 
