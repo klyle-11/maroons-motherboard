@@ -140,11 +140,19 @@ async function loadSettings() {
 
 async function saveSettings() {
   try {
+    const wifiPassword = document.getElementById('wifi-password').value;
+    
+    // Validate WiFi password length
+    if (wifiPassword && wifiPassword.length < 7) {
+      alert('WiFi password must be at least 7 characters long for captive portal compatibility.');
+      return;
+    }
+    
     const settings = {
       rgbMode: ledMode,
       rgbColor: document.getElementById('led-color').value,
       wifiSSID: document.getElementById('ssid').value,
-      wifiPassword: document.getElementById('wifi-password').value,
+      wifiPassword: wifiPassword,
       brightness: parseInt(document.getElementById('brightness').value),
       autoGenerateMedia: document.getElementById('auto-generate').checked
     };
@@ -280,6 +288,14 @@ async function updateAdminPassword() {
 
 // WiFi settings
 function updateWiFiSettings() {
+  const wifiPassword = document.getElementById('wifi-password').value;
+  
+  // Validate WiFi password length
+  if (wifiPassword && wifiPassword.length < 7) {
+    alert('WiFi password must be at least 7 characters long for captive portal compatibility.');
+    return;
+  }
+  
   saveSettings();
   alert('WiFi settings updated. Changes will take effect after restart.');
 }
