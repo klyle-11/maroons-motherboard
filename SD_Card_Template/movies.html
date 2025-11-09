@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Version 2.1 -->
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
@@ -13,11 +14,12 @@
     --text:#333;
     --radius:10px;
     --shadow:0 6px 18px rgba(0,0,0,0.08);
-    --card-gap:1rem; 
-    --header-height:68px; 
+    --card-gap:1rem; /* used in JS for calculations */
+    --header-height:68px; /* fallback used by CSS; JS will set exact top */
   }
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
   body{font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column;min-height:100vh}
+  /* Optional dark class hook - you can extend these rules later if desired */
   body.dark{ background:#101217; color:#e6eef8; }
   body.dark header{ background:#07142a; }
   body.dark .toolbar{ background: #0d1722; border-bottom-color: rgba(255,255,255,0.04); }
@@ -168,8 +170,6 @@
     }
     .video-modal-content .close-btn:hover { filter:brightness(0.96); }
 
-  footer{padding:10px;text-align:center;color:#666;font-size:0.95rem}
-
   /* --- entrance animation for cards --- */
   .media-card.play-anim { animation-name:cardIn; animation-duration:360ms; animation-timing-function:cubic-bezier(.2,.9,.2,1); animation-fill-mode:both; will-change:transform,opacity; }
   @keyframes cardIn {
@@ -177,6 +177,10 @@
     to   { opacity:1; transform:translateX(0) scale(1); }
   }
 
+  /* ── DARK-THEME: MODAL + PLAYER SPECIFIC RULES ──
+     Only change the popup/menu and video player appearance when dark mode is active.
+     Keep the rest of the UI unchanged so behavior is preserved.
+  */
   body.dark .modal { background: rgba(2,6,10,0.78); }
   body.dark .modal-content {
     background: #0b1116;
@@ -212,6 +216,8 @@
   }
   body.dark .video-modal-content .close-btn { background: var(--primary-dark); color: #fff; border: none; }
 
+  /* ensure toolbar inputs keep readable behavior but don't interfere with modal colors */
+  /* Note: the JS intentionally forces the search box to white for readability; leaving that behavior intact. */
 </style>
 </head>
 <body>
@@ -259,7 +265,6 @@
     </div>
   </div>
 
-  <footer>© <span id="year"></span> Jcorp Nomad</footer>
 
 <script>
 /* Config */
@@ -272,13 +277,13 @@ const VIDEO_EXTS = ['.mp4','.mkv','.avi','.mov','.webm','.m4v'];
 const IMAGE_EXTS = ['.jpg','.jpeg','.png','.webp','.avif'];
 const SUB_EXTS = ['.srt','.vtt','.ass','.ssa','.sub'];
 
-/* THEME KEY + THEME BOOT & SYNC */
+/* NEW: THEME KEY + THEME BOOT & SYNC */
 const THEME_KEY = 'nomad_dark_mode';
 function applyThemeFlag(dark){
   if(dark) document.body.classList.add('dark');
   else document.body.classList.remove('dark');
 
-  // search readable: enforce white bg + black text
+  // Keep search readable: enforce white bg + black text (menu wants this behavior)
   const search = document.querySelector('.search-input');
   if(search){
     try {
@@ -302,7 +307,7 @@ window.addEventListener('storage', (ev) => {
     applyThemeFlag(dark);
   }
 });
-
+// optional helper for local toggles
 function toggleThemeLocal(){
   const isDark = document.body.classList.toggle('dark');
   try { localStorage.setItem(THEME_KEY, isDark ? 'true' : 'false'); }catch(e){}
@@ -316,10 +321,10 @@ let currentMovie = null;
 let autosaveTimer = null;
 let rootSig = null;
 
-    /* ---------- Screen wake lock / NoSleep fallback ---------- */
-    /* Keeps the screen on during playback (some browsers dont do this by default) */
+/* ---------- Screen wake lock / NoSleep fallback ---------- */
+/* Place this right after your "State" declarations */
 let wakeLock = null;
-let noSleep = null; // Not used
+let noSleep = null; // used if NoSleep.js is loaded
 
 async function requestWakeLock(){
   try {
@@ -333,7 +338,7 @@ async function requestWakeLock(){
       return true;
     }
 
-    // Fallback: NoSleep.js (Not Used)
+    // Fallback: NoSleep.js (if included via script tag)
     if(window.NoSleep){
       if(!noSleep) noSleep = new NoSleep();
       try { noSleep.enable(); } catch(e){ console.warn('NoSleep.enable() failed', e); }
@@ -380,7 +385,7 @@ function writeResume(v){ localStorage.setItem(RESUME_KEY, JSON.stringify(v)); }
 function fileKey(path, sz=0, mt=0){ return `${normalizePath(path)}|${sz||0}|${mt||0}`; }
 function formatTime(sec){ if(!sec||!isFinite(sec)) return '0:00'; sec=Math.floor(sec); const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60; if(h) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; return `${m}:${String(s).padStart(2,'0')}`; }
 
-/* getHashParam() — parse location.hash into {action, path} safely */
+/* NEW: getHashParam() — parse location.hash into {action, path} safely */
 function getHashParam(){
   const h = (location.hash || '').replace(/^#/,'');
 
@@ -462,6 +467,12 @@ function clearResumeFor(path){
 async function fetchIndex(path){
   const url = `${INDEX_ENDPOINT}?path=${encodeURIComponent(normalizePath(path))}&_=${Date.now()}`;
   const res = await fetch(url, { cache: 'no-store' });
+
+  if(res.status === 202) {
+    // Server is building index - throw a specific error that can be caught
+    throw new Error('INDEX_BUILDING');
+  }
+
   if(!res.ok) throw new Error('index fetch failed '+res.status);
   const text = await res.text();
   const lines = text.split('\n').filter(Boolean);
@@ -474,7 +485,7 @@ async function fetchIndex(path){
 }
 
 
-/* Build movies from NDJSON indexes */
+/* Build movies from NDJSON indexes (kept original behavior) */
 async function buildFromIndexes(root){
   // Attempt to set rootSig using the root index header
   const rootResp = await fetchIndex(root);
@@ -560,7 +571,7 @@ async function loadFromMediaJson(){
   return out;
 }
 
-/* Render grid  */
+/* Render grid with optional staggered animation on first load */
 const gridEl = document.getElementById('grid');
 
 function renderGrid(){
@@ -570,7 +581,7 @@ function renderGrid(){
   for(const item of filtered){
     const card = document.createElement('div');
     card.className = 'media-card';
-    // update badge for a specific movie without re-rendering whole grid
+    // helpful hook to update badge for a specific movie without re-rendering whole grid:
     card.dataset.path = item.path || '';
 
     const saved = findResume(item);
@@ -719,11 +730,17 @@ function openMovieFromHash(hashObj){
            || movies.find(m => normalizePath('/' + (m.rawName||'')).endsWith(want.split('/').pop()))
            || movies.find(m => normalizePath(m.path).endsWith(want.split('/').pop()));
 
+  // If not found, try a quick reload of library once (in case hash arrived before library loaded fully)
   if(!found){
     try {
-      
+      // loadLibrary is defined elsewhere; we try to refresh the list then search again
+      // (useful when hash handling runs early)
+      // NOTE: this is non-blocking if loadLibrary already ran
+      // but we await to give the library a chance to populate
+      // only do this when movies[] is empty to avoid unnecessary reloads
       if(!movies || movies.length === 0){
-c
+        // eslint-disable-next-line no-undef
+        // await loadLibrary(); // if you prefer to await here, uncomment and ensure this function is marked async
       }
       found = movies.find(m => normalizePath(m.path) === want) ||
               movies.find(m => normalizePath('/' + (m.rawName||'')) === want) ||
@@ -783,7 +800,6 @@ function startStallWatcher(player, src){
   clearTimeout(stallTimer);
   stallRetries = 0;
 
-  // probe server with a small range request to verify ranges still work
   async function probeRange(url){
     try {
       const resp = await fetch(url, {
@@ -800,26 +816,20 @@ function startStallWatcher(player, src){
   async function scheduleCheck(delay = 8000){
     clearTimeout(stallTimer);
     stallTimer = setTimeout(async () => {
-      // do nothing if user paused or video is already sufficiently buffered
       if(player.paused || player.readyState >= 3 || stallRetries >= 2) return;
 
       const ok = await probeRange(src);
       if(ok){
-        // Server responded; schedule next check
         scheduleCheck();
         return;
       }
 
-      // probe failed -> attempt a single, controlled retry with cache-bust
       stallRetries++;
       console.warn('stallWatcher: probe failed, retry attempt', stallRetries);
 
-      // last-resort reassign: append one cache-bust param and try to resume
       const newSrc = `${src}${src.includes('?') ? '&' : '?'}_=${Date.now()}`;
       try {
-        // pause briefly so reassign doesn't race
         player.pause();
-        // assign new src and load once (this will interrupt, but only done if probe failed)
         player.src = newSrc;
         try { player.load(); } catch(e){}
         try { player.currentTime = player.currentTime; } catch(e){}
@@ -828,16 +838,18 @@ function startStallWatcher(player, src){
         console.warn('stallWatcher retry failed', e);
       }
 
-      // schedule another check to avoid continuous rewrites
       scheduleCheck(9000);
     }, delay);
   }
 
-  function onPlaying(){
-    player.removeEventListener('playing', onPlaying);
+  let hasStartedPlaying = false;
+  function onFirstPlay(){
+    if(hasStartedPlaying) return;
+    hasStartedPlaying = true;
+    player.removeEventListener('playing', onFirstPlay);
     scheduleCheck();
   }
-  player.addEventListener('playing', onPlaying);
+  player.addEventListener('playing', onFirstPlay);
   player.addEventListener('pause', () => clearTimeout(stallTimer));
   player.addEventListener('ended', () => clearTimeout(stallTimer));
 }
@@ -851,18 +863,37 @@ function openVideo(src, useResume=false){
   videoPlayer.load();
   videoModal.style.display = 'flex';
   videoPlayer.src = src;
+  videoPlayer.preload = 'auto';
   videoTitle.textContent = currentMovie ? currentMovie.name : '';
 
   const saved = findResume(currentMovie || { path: '' });
+  let playAttempted = false;
 
-  function onMeta(){
-    videoPlayer.removeEventListener('loadedmetadata', onMeta);
+  function attemptPlay(){
+    if(playAttempted) return;
+    playAttempted = true;
+    
     if(useResume && saved && saved.entry && saved.entry.position > 1){
-      try { videoPlayer.currentTime = saved.entry.position; } catch(e){ console.warn('seek failed', e); }
+      videoPlayer.currentTime = saved.entry.position;
     }
     startAutosave();
+    videoPlayer.play().catch(e => console.warn('Play failed:', e));
   }
-  videoPlayer.addEventListener('loadedmetadata', onMeta);
+
+  videoPlayer.addEventListener('loadedmetadata', () => {
+    console.log('Metadata loaded');
+    attemptPlay();
+  }, { once: true });
+
+  videoPlayer.addEventListener('canplay', () => {
+    console.log('Can play');
+    attemptPlay();
+  }, { once: true });
+
+  setTimeout(() => {
+    console.log('Timeout fallback - forcing play');
+    attemptPlay();
+  }, 1000);
 
   videoPlayer.addEventListener('pause', saveNow);
   videoPlayer.addEventListener('seeked', saveNow);
@@ -871,11 +902,9 @@ function openVideo(src, useResume=false){
     stopAutosave();
     renderGrid();
   });
-
+  
   startStallWatcher(videoPlayer, src);
-  videoPlayer.play().catch(()=>{});
 }
-
 function closeVideo(){
   try{ saveNow(); }catch(e){}
   videoPlayer.pause();
@@ -901,7 +930,7 @@ function saveNow(){
       const key = fileKey(currentMovie.path, currentMovie.sz || 0, currentMovie.mt || 0);
       store[key] = { position: cur, duration: dur, updated: Date.now() };
       writeResume(store);
-      // only update the badge for the current movie to avoid re-rendering the whole grid (stops flashing bug)
+      // only update the badge for the current movie to avoid re-rendering the whole grid (stops flashing)
       try { updateResumeBadge(currentMovie, cur); } catch(e){ /* noop */ }
     }
   } catch(e){ console.warn('saveNow failed', e); }
@@ -918,6 +947,12 @@ async function loadLibrary(){
       return;
     }
   } catch(e){
+    if(e && e.message === 'INDEX_BUILDING') {
+      // Show loading message and retry after delay
+      gridEl.innerHTML = '<p style="grid-column:1/-1;text-align:center;color:var(--primary-dark);">Building movie index, please wait...</p>';
+      setTimeout(() => loadLibrary(), 3000); // Retry in 3 seconds
+      return;
+    }
     console.warn('index build failed, falling back', e);
   }
 
@@ -987,14 +1022,13 @@ document.addEventListener('keydown', (e) => {
 });
 
 /* bootstrap */
-document.getElementById('year').textContent = new Date().getFullYear();
 setViewSize(currentSize);
 viewButtons.forEach(btn => btn.addEventListener('click', () => setViewSize(btn.dataset.size)));
 searchInput.addEventListener('input', (e)=> { clearTimeout(window.__debounce); window.__debounce = setTimeout(()=> applyFilter(e.target.value), 150); });
 sortSelect.addEventListener('change', ()=> applySort(sortSelect.value));
 videoPlayer.addEventListener('ended', closeVideo);
 
-/* listen for hash changes and route them */
+/* NEW: listen for hash changes and route them */
 window.addEventListener('hashchange', ()=> handleHashNavigation(getHashParam()));
 
 /* Init sequence */
@@ -1002,7 +1036,7 @@ window.addEventListener('hashchange', ()=> handleHashNavigation(getHashParam()))
   try {
     await loadLibrary();
 
-    // ensure toolbar sits below the header on all screen sizes
+    // NEW: ensure toolbar sits below the header on all screen sizes
     function updateToolbarTop(){
       try {
         const headerEl = document.querySelector('header');
@@ -1010,7 +1044,7 @@ window.addEventListener('hashchange', ()=> handleHashNavigation(getHashParam()))
         if(!headerEl || !toolbarEl) return;
         const h = Math.ceil(headerEl.getBoundingClientRect().height);
         toolbarEl.style.top = h + 'px';
-        // CSS var (keeps the stylesheet fallback in sync)
+        // Also update CSS var (keeps the stylesheet fallback in sync)
         document.documentElement.style.setProperty('--header-height', h + 'px');
       } catch(e){ /* ignore measurement errors */ }
     }
@@ -1018,7 +1052,7 @@ window.addEventListener('hashchange', ()=> handleHashNavigation(getHashParam()))
     window.addEventListener('load', updateToolbarTop);
     updateToolbarTop(); // initial set
 
-    // handle any hash present once movies[] is available
+    // NEW: handle any hash present once movies[] is available
     try { handleHashNavigation(getHashParam()); } catch(e){ console.warn('hash handling failed', e); }
 
   } catch(e){
