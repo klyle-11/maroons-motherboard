@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <!-- Nomad Gallery -->
+<!-- Version 2.1 -->
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -42,7 +43,6 @@
     .modal-info{flex:0 0 auto;padding:1rem 0 0;overflow-y:auto;max-height:25vh;color:#ddd;font-size:.95rem}
     .modal-close{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.5);color:#fff;border:none;font-size:1.5rem;padding:.2rem .5rem;border-radius:50%;cursor:pointer}
     .pager{display:flex;justify-content:center;align-items:center;padding:1rem;gap:1rem;flex-wrap:wrap}
-    footer{padding:1rem;text-align:center;font-size:.9rem;color:#666}
     @media(max-width:600px){
       header{flex-direction:column}
       .back-btn{width:100%;text-align:center}
@@ -61,7 +61,8 @@
 
   <div class="toolbar" role="toolbar" aria-label="Gallery toolbar">
     <div class="toolbar-left">
-      <button id="uploadBtn" class="btn" title="Upload files">⬆ Upload</button>
+      <!-- Uncomment to add upload functionality / button -->
+      <!-- <button id="uploadBtn" class="btn" title="Upload files">⬆ Upload</button> -->
     </div>
 
     <label>
@@ -107,8 +108,6 @@
     </div>
   </div>
 
-  <footer>© <span id="year"></span> Jcorp Nomad</footer>
-
   <input id="uploadInput" type="file" multiple style="display:none" />
 
 <script>
@@ -136,7 +135,6 @@ const modalInfo = document.getElementById('modalInfo');
 const prevBtn = document.getElementById('prevBtn');
 const nextBtn = document.getElementById('nextBtn');
 const pageInfo = document.getElementById('pageInfo');
-document.getElementById('year').textContent = new Date().getFullYear();
 
 /* ---------- THEME BOOT & SYNC ---------- */
 function applyThemeFlag(dark){
@@ -703,44 +701,44 @@ function closeModal(evt){
 }
 
 /* ---------- upload (sequential XHR; sends dir=/Gallery) ---------- */
-uploadBtn.addEventListener('click', ()=> uploadInput.click());
-uploadInput.addEventListener('change', (e)=>{
-  const files = Array.from(e.target.files || []);
-  if(files.length === 0) return;
-  (async ()=>{
-    uploadBtn.disabled = true;
-    const originalText = uploadBtn.textContent;
-    uploadBtn.textContent = 'Uploading…';
-    try{
-      for(let i=0;i<files.length;i++){
-        await uploadSingleFileXHR(files[i], ROOT);
-      }
-      await refreshIndex();
-      uploadBtn.textContent = 'Uploaded ✓';
-      setTimeout(()=>{ uploadBtn.textContent = originalText; uploadBtn.disabled = false; }, 1000);
-    }catch(err){
-      console.error('upload error', err);
-      uploadBtn.textContent = 'Upload Failed';
-      setTimeout(()=>{ uploadBtn.textContent = originalText; uploadBtn.disabled = false; }, 1500);
-    } finally { uploadInput.value = ''; }
-  })();
-});
-function uploadSingleFileXHR(file, dir){
-  return new Promise((resolve,reject)=>{
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', UPLOAD_ENDPOINT, true);
-    xhr.withCredentials = true;
-    const fd = new FormData();
-    fd.append('dir', (dir.startsWith('/') ? dir : '/' + dir));
-    fd.append('file', file, file.name);
-    xhr.onload = function(){
-      if(xhr.status >= 200 && xhr.status < 300){ resolve(); }
-      else { reject(new Error('Upload failed: ' + xhr.status)); }
-    };
-    xhr.onerror = function(){ reject(new Error('Upload network error')); };
-    xhr.send(fd);
-  });
-}
+// uploadBtn.addEventListener('click', ()=> uploadInput.click());
+// uploadInput.addEventListener('change', (e)=>{
+//   const files = Array.from(e.target.files || []);
+//   if(files.length === 0) return;
+//   (async ()=>{
+//     uploadBtn.disabled = true;
+//     const originalText = uploadBtn.textContent;
+//     uploadBtn.textContent = 'Uploading…';
+//     try{
+//       for(let i=0;i<files.length;i++){
+//         await uploadSingleFileXHR(files[i], ROOT);
+//       }
+//       await refreshIndex();
+//       uploadBtn.textContent = 'Uploaded ✓';
+//       setTimeout(()=>{ uploadBtn.textContent = originalText; uploadBtn.disabled = false; }, 1000);
+//     }catch(err){
+//       console.error('upload error', err);
+//       uploadBtn.textContent = 'Upload Failed';
+//       setTimeout(()=>{ uploadBtn.textContent = originalText; uploadBtn.disabled = false; }, 1500);
+//     } finally { uploadInput.value = ''; }
+//   })();
+// });
+// function uploadSingleFileXHR(file, dir){
+//   return new Promise((resolve,reject)=>{
+//     const xhr = new XMLHttpRequest();
+//     xhr.open('POST', UPLOAD_ENDPOINT, true);
+//     xhr.withCredentials = true;
+//     const fd = new FormData();
+//     fd.append('dir', (dir.startsWith('/') ? dir : '/' + dir));
+//     fd.append('file', file, file.name);
+//     xhr.onload = function(){
+//       if(xhr.status >= 200 && xhr.status < 300){ resolve(); }
+//       else { reject(new Error('Upload failed: ' + xhr.status)); }
+//     };
+//     xhr.onerror = function(){ reject(new Error('Upload network error')); };
+//     xhr.send(fd);
+//   });
+// }
 
 /* ---------- Hash helpers (open via #open=...) ---------- */
 function getHashParam(){
@@ -814,4 +812,3 @@ init();
 </script>
 </body>
 </html>
-
