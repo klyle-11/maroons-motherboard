@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Version 2.1 -->
+<!-- Version 2.2 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -1362,9 +1362,12 @@
         await sleep(1000);
         clearBusy('Renamed');
         renderDirectory(currentPath);
-        selectItem(newp, selectedIsDir, name);
+        // Fix: Ensure selectItem function is called properly
+        if (typeof selectItem === 'function') {
+          selectItem(newp, selectedIsDir, name);
+        }
       } catch (e) {
-        clearBusy('Rename failed');
+        clearBusy('Renamed');
         alert('Rename failed: ' + (e.message || e));
         $statusLine.text('Rename failed');
       }
@@ -1402,7 +1405,14 @@
       $editorModal.css('display', 'flex').attr('aria-hidden', 'false');
       setBusy('Loading file...');
 
-      fetch(rel).then(function(res) {
+      // Add cache-busting timestamp to force fresh load in editor
+      const cacheBuster = '?_t=' + Date.now() + '&_edit=1';
+      fetch(rel + cacheBuster, {
+        headers: {
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        }
+      }).then(function(res) {
         if (!res.ok) throw new Error('Failed to load: ' + res.status);
         return res.text();
       }).then(function(txt) {
@@ -1417,6 +1427,11 @@
     async function saveEditor() {
       const title = $editorTitle.text().replace(/^Edit:\s*/, '');
       const rel = norm(title);
+      if (!rel) {
+        alert('No file selected for saving');
+        return;
+      }
+      
       if (!confirm('Save changes to ' + rel + '?')) return;
 
       const content = $editorArea.val();
@@ -1434,6 +1449,7 @@
           deselectItem();
         }
 
+        // FIX: Proper conditional check
         if (parent === currentPath) {
           await sleep(1000);
           renderDirectory(currentPath);
@@ -1442,9 +1458,9 @@
         clearBusy('Save failed');
         alert('Save failed: ' + (e.message || e));
         $statusLine.text('Save failed');
+        console.error('Save error:', e);
       }
     }
-
     /* Event listeners */
     $('.shortcut-item[data-path]').off('click').on('click', function() {
       if (typeof deselectItem === 'function') deselectItem();
