@@ -1,5 +1,5 @@
 // Jcorp Nomad Backend
-//<!-- Version 3.3 -->
+//<!-- Version 3.4 -->
 #include <Arduino.h>
 #define FF_USE_FASTSEEK 1
 #define SD_FREQ_KHZ 40000
@@ -98,6 +98,7 @@ static size_t jsonEscapeToBuf(const String &in, char *dst, size_t dstLen) {
   dst[pos] = '\0';
   return pos;
 }
+
 static void writeIndexEntryToFile(File &fout, char t, const String &name, const String &path, uint64_t sz = 0, uint64_t mt = 0) {
   char escName[HALF_INDEX_BUF];
   char escPath[HALF_INDEX_BUF];
@@ -1364,13 +1365,36 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
 
   if (!filePath.startsWith("/")) filePath = "/" + filePath;
   filePath = normalizePath(filePath);
-
+  Serial.printf("[DEBUG] handleRangeRequest: path='%s', sdErrorFlag=%s, cooldownUntil=%lu, currentTime=%lu\n", 
+                filePath.c_str(), 
+                sdErrorFlag ? "TRUE" : "FALSE",
+                sdErrorCooldownUntil,
+                millis());
   Serial.printf("[RangeHandler] requested filePath='%s' method=%d Range=%s\n",
                 filePath.c_str(), request->method(),
                 request->hasHeader("Range") ? request->header("Range").c_str() : "");
 
-  if (!SD_MMC.exists(filePath)) {
-    Serial.printf("[RangeHandler] file not found: %s\n", filePath.c_str());
+  // Take SD mutex before any SD operations
+  if (sdMutex) {
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+      Serial.printf("[RangeHandler] SD mutex timeout for: %s\n", filePath.c_str());
+      request->send(503, "text/plain", "SD busy — retrying shortly");
+      return;
+    }
+  }
+
+  auto releaseSd = [&](){
+    if (sdMutex) xSemaphoreGive(sdMutex);
+  };
+
+  bool fileExists = SD_MMC.exists(filePath);
+  Serial.printf("[DEBUG] SD_MMC.exists('%s') = %s\n", filePath.c_str(), fileExists ? "TRUE" : "FALSE");
+  
+  if (!fileExists) {
+    Serial.printf("[DEBUG] 404 TRIGGERED: File not found: %s (sdErrorFlag=%s)\n", 
+                  filePath.c_str(), 
+                  sdErrorFlag ? "TRUE" : "FALSE");
+    releaseSd();
     request->send(404, "text/plain", "File not found");
     return;
   }
@@ -1380,8 +1404,19 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
     Serial.printf("[SD] open() failed for '%s' — trigger recovery\n", filePath.c_str());
     sdErrorFlag = true;
     sdErrorCooldownUntil = millis() + 5000;
+    releaseSd();
     request->send(503, "text/plain", "SD error — retrying shortly");
     return;
+  if (!file) {
+    Serial.printf("[SD] open() failed for '%s' — trigger recovery\n", filePath.c_str());
+    // ADD THIS LINE HERE:
+    Serial.printf("[DEBUG] SD OPEN FAILED: Setting sdErrorFlag=true, cooldown until %lu\n", millis() + 5000);
+    sdErrorFlag = true;
+    sdErrorCooldownUntil = millis() + 5000;
+    releaseSd();
+    request->send(503, "text/plain", "SD error — retrying shortly");
+    return;
+  }
   }
 
   size_t fileSize = file.size();
@@ -1395,8 +1430,9 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
     headResponse->addHeader("Content-Length", String(fileSize));
     headResponse->addHeader("Cache-Control", "no-cache");
     headResponse->addHeader("Pragma", "no-cache");
-    request->send(headResponse);
     file.close();
+    releaseSd();
+    request->send(headResponse);
     return;
   }
 
@@ -1483,6 +1519,7 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
       file.seek(startByte);
       size_t bytesRead = file.read(probeBuffer, contentLength);
       file.close();
+      releaseSd();
       
       AsyncWebServerResponse *response = request->beginResponse_P(206, mimeType.c_str(), probeBuffer, contentLength);
       response->addHeader("Access-Control-Allow-Origin", "*");
@@ -1494,6 +1531,9 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
       return;
     }
   }
+
+  // Release mutex for streaming response - file handle will manage the rest
+  releaseSd();
 
   // Use original pattern: capture file by value, let ESP32 File handle manage state
   // The File copy constructor handles the reference properly for SD_MMC
@@ -2613,11 +2653,17 @@ void storageMonitorTask(void *param) {
             return;
         }
 
-        uint64_t total = SD_MMC.totalBytes();
-        uint64_t used = SD_MMC.usedBytes();
-        float percent = (float)used / (float)total * 100.0f;
-
-        sdbarDirty = true;
+        // Protect SD operations with mutex
+        if (sdMutex && xSemaphoreTake(sdMutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            uint64_t total = SD_MMC.totalBytes();
+            uint64_t used = SD_MMC.usedBytes();
+            xSemaphoreGive(sdMutex);
+            
+            float percent = (float)used / (float)total * 100.0f;
+            sdbarDirty = true;
+        } else {
+            Serial.println("[StorageMonitor] Could not acquire SD mutex, skipping this cycle");
+        }
 
         int delayMs = mediaStreamingActive ? 30000 : 10000; // 30s vs 10s
         vTaskDelay(pdMS_TO_TICKS(delayMs));
@@ -3019,7 +3065,30 @@ bool checkAndHandleLegacyIndex() {
 
   return false; // No legacy upgrade needed
 }
-
+void serveProtectedFile(AsyncWebServerRequest *request, const String& filePath) {
+    if (sdMutex) {
+        if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+            request->send(503, "text/plain", "SD busy");
+            return;
+        }
+    }
+    
+    auto releaseSd = [&](){
+        if (sdMutex) xSemaphoreGive(sdMutex);
+    };
+    
+    if (!SD_MMC.exists(filePath)) {
+        releaseSd();
+        request->send(404, "text/plain", "File not found");
+        return;
+    }
+    
+    String mime = getMimeType(filePath);
+    AsyncWebServerResponse *response = request->beginResponse(SD_MMC, filePath, mime);
+    releaseSd();
+    response->addHeader("Cache-Control", "public, max-age=600");
+    request->send(response);
+}
 // ------------- Main Setup -------------------
 void setup() {
     Serial.begin(115200);
@@ -3073,54 +3142,12 @@ if (!SD_MMC.setPins(SD_CLK_PIN, SD_CMD_PIN, SD_D0_PIN, SD_D1_PIN, SD_D2_PIN, SD_
     return;
 }
 
-// Try different initialization methods
-Serial.println("Attempting SD card initialization...");
-
-// Method 1: Default parameters
-if (SD_MMC.begin()) {
-    Serial.println("SUCCESS: SD card initialized with default settings");
-} 
-// Method 2: 1-bit mode
-else if (SD_MMC.begin("/sdcard", true)) {
-    Serial.println("SUCCESS: SD card initialized in 1-bit mode");
-}
-// Method 3: Conservative frequency
-else if (SD_MMC.begin("/sdcard", false, false, SDMMC_FREQ_PROBING)) {
-    Serial.println("SUCCESS: SD card initialized with probing frequency");
-}
-// Method 4: Very conservative
-else if (SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_PROBING)) {
-    Serial.println("SUCCESS: SD card initialized with 1-bit + probing");
-}
-else {
-    Serial.println("ERROR: All SD initialization methods failed");
-    Serial.println("Checking SD card presence...");
-    
-    // Check if card is detected at all
-    if (SD_MMC.cardType() == CARD_NONE) {
-        Serial.println("No SD card detected - check physical connection");
-    } else {
-        Serial.println("SD card detected but initialization failed");
-        Serial.printf("Card Type: %d\n", SD_MMC.cardType());
-    }
+if (!SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT, 12)) {
+    Serial.println("ERROR: SDMMC Card initialization failed.");
     return;
 }
 
-// If we got here, SD initialized successfully
-uint8_t cardType = SD_MMC.cardType();
-Serial.printf("SD Card Type: %d\n", cardType);
-Serial.printf("SD Card Size: %.2f GB\n", SD_MMC.cardSize() / (1024.0 * 1024.0 * 1024.0));
-
-// Test ExFAT specifically
-File testFile = SD_MMC.open("/test.txt", FILE_WRITE);
-if (testFile) {
-    testFile.println("ExFAT test");
-    testFile.close();
-    Serial.println("ExFAT write test: SUCCESS");
-    SD_MMC.remove("/test.txt");
-} else {
-    Serial.println("ExFAT write test: FAILED");
-}
+Serial.println("SD Card initialized successfully!");
 
     webLogf("success", "SD Card initialized successfully - Size: %.1f GB", (float)SD_MMC.cardSize() / (1024.0 * 1024.0 * 1024.0));
 
@@ -3623,90 +3650,6 @@ if (testFile) {
         handleRangeRequest(request);
     });
 
-    // OPTIONS preflight for Books directory
-    server.on("^\\/Books\\/.*$", HTTP_OPTIONS, [](AsyncWebServerRequest *request){
-        AsyncWebServerResponse *response = request->beginResponse(204, "text/plain", "");
-        response->addHeader("Access-Control-Allow-Origin", "*");
-        response->addHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-        response->addHeader("Access-Control-Allow-Headers", "Range, Content-Type, Accept");
-        response->addHeader("Access-Control-Max-Age", "86400");
-        request->send(response);
-    });
-    // Captive Portal + delegated handlers: Redirect unknown requests but handle Archive & wasm first
-    server.onNotFound([](AsyncWebServerRequest *request) {
-        const unsigned long LOG_INTERVAL_MS = 10000UL; // one log per client per 10s
-
-        String url = request->url();
-        
-        // Handle Books directory requests
-        if (url.startsWith("/Books/")) {
-        Serial.printf("[onNotFound] Delegating Books request to handleRangeRequest for: %s\n", url.c_str());
-        handleRangeRequest(request);
-        return;
-        }
-        
-        // If this is an Archive path, delegate to handleRangeRequest (will handle HEAD/GET/Range)
-        if (url.startsWith("/Archive/")) {
-        Serial.printf("[onNotFound] Delegating Archive request to handleRangeRequest for: %s\n", url.c_str());
-        handleRangeRequest(request);
-        return;
-        }
-
-      // If this is the Kiwix wasm asset path, serve with correct MIME + CORS + Accept-Ranges
-      if (url.startsWith("/assets/kiwix/")) {
-        Serial.printf("[onNotFound] asset request: %s\n", url.c_str());
-
-        // If the file exists on SD_MMC, serve it with the appropriate MIME and CORS
-        if (SD_MMC.exists(url.c_str())) {
-          String mime = "text/plain";
-          if (url.endsWith(".js"))   mime = "application/javascript";
-          else if (url.endsWith(".mjs")) mime = "application/javascript";
-          else if (url.endsWith(".css"))  mime = "text/css";
-          else if (url.endsWith(".html")) mime = "text/html";
-          else if (url.endsWith(".json")) mime = "application/json";
-          else if (url.endsWith(".wasm")) mime = "application/wasm";
-          else if (url.endsWith(".svg"))  mime = "image/svg+xml";
-          else if (url.endsWith(".png"))  mime = "image/png";
-          else if (url.endsWith(".jpg") || url.endsWith(".jpeg")) mime = "image/jpeg";
-          //will add more
-
-          AsyncWebServerResponse *resp = request->beginResponse(SD_MMC, url.c_str(), mime.c_str());
-          resp->addHeader("Accept-Ranges", "bytes");
-          resp->addHeader("Access-Control-Allow-Origin", "*");
-          resp->addHeader("Cache-Control", "max-age=600");
-          request->send(resp);
-          return;
-        } else {
-          Serial.printf("[onNotFound] asset NOT found: %s\n", url.c_str());
-          // fall through: return 404 instead of index.html so it's obvious
-          request->send(404, "text/plain", "not found");
-          return;
-        }
-      }
-
-      String userAgent = "";
-      if (request->hasHeader("User-Agent")) userAgent = request->header("User-Agent");
-      String clientKey = userAgent.length() ? userAgent : String("NO_UA");
-
-      // Block WhatsApp link preview requests
-      if (userAgent.indexOf("WAChat") >= 0 || userAgent.indexOf("WhatsApp") >= 0) {
-        request->send(204);
-        return;
-      }
-
-      if (userAgent.length()) {
-        Serial.println("[User-Agent] " + userAgent);
-
-        if (userAgent.indexOf("iPhone") >= 0 || userAgent.indexOf("iPad") >= 0 || userAgent.indexOf("Macintosh") >= 0) {
-          Serial.println("Apple device detected. Serving appleindex.html");
-          request->send(SD_MMC, "/appleindex.html", "text/html");
-          return;
-        }
-      }
-
-      Serial.println("Android/device default. Serving index.html");
-      request->send(SD_MMC, "/index.html", "text/html");
-    });
 
     // Captive triggers for Apple & Android devices
     server.on("/hotspot-detect.html", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -3765,63 +3708,112 @@ if (testFile) {
     });
     server.on("/listfiles", HTTP_GET, handleListFiles);
     server.on("/zim", HTTP_GET, handleRangeRequest);  // alias to existing range handler: /zim?file=/Archive/name.zim
-    // Static HTML routes
-    server.serveStatic("/movies.html", SD_MMC, "/movies.html");
-    server.serveStatic("/music.html", SD_MMC, "/music.html");
-    server.serveStatic("/playlist.html", SD_MMC, "/playlist.html");
-    server.serveStatic("/books.html", SD_MMC, "/books.html");
-    server.serveStatic("/shows.html", SD_MMC, "/shows.html");
-    server.serveStatic("/admin.html", SD_MMC, "/admin.html");
-    server.serveStatic("/games.html", SD_MMC, "/games.html");
-    server.serveStatic("/maps.html", SD_MMC, "/maps.html");
-    server.serveStatic("/menu.html", SD_MMC, "/menu.html");
-    server.serveStatic("/movies", SD_MMC, "/movies.html");
-    server.serveStatic("/music",  SD_MMC, "/music.html");
-    server.serveStatic("/playlist",  SD_MMC, "/playlist.html");
-    server.serveStatic("/books",  SD_MMC, "/books.html");
-    server.serveStatic("/shows",  SD_MMC, "/shows.html");
-    server.serveStatic("/admin",  SD_MMC, "/admin.html");
-    server.serveStatic("/games",  SD_MMC, "/games.html");
-    server.serveStatic("/maps",   SD_MMC, "/maps.html");
-    server.serveStatic("/menu",   SD_MMC, "/menu.html");
-    server.serveStatic("/gallery",   SD_MMC, "/gallery.html");
-    server.serveStatic("/files",   SD_MMC, "/files.html");
-    server.serveStatic("/filebrowser",   SD_MMC, "/filebrowser.html");
-    server.on("^/assets/.*", HTTP_GET, [](AsyncWebServerRequest *request) {
-        String url = request->url();            // e.g. /assets/javascript-libzim-main/tests/prototype/libzim-wasm.wasm
-        // Strip query string if present
-        int qi = url.indexOf('?');
-        if (qi > 0) url = url.substring(0, qi);
-
-        // Work with SD_MMC FS path 
-        String fsPath = url; // e.g. "/assets/..."
-
-        // File not found
-        if (!SD_MMC.exists(fsPath)) {
-            request->send(404, "text/plain", "Not found");
-            return;
-        }
-
-        // Choose MIME type
-        String mime = getMimeType(fsPath);
-
-        if (request->hasHeader("Range") || fsPath.endsWith(".wasm") || fsPath.endsWith(".zim")) {
-            // handleRangeRequest should read request->url() or the path and serve bytes properly.
-            handleRangeRequest(request);
-            return;
-        }
-
-        // Normal full response for small/static files
-        AsyncWebServerResponse *response = request->beginResponse(SD_MMC, fsPath, mime);
-        // Ensure browser/wasm loader can request ranges later if needed (this never works though)
-        response->addHeader("Accept-Ranges", "bytes");
-        // caching header for static assets
-        response->addHeader("Cache-Control", "public, max-age=600");
-        request->send(response);
-
-    }, nullptr); // no body parser
+    // Protected HTML route handlers (replace serveStatic calls)
+    server.on("/movies.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/movies.html"); });
+    server.on("/music.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/music.html"); });
+    server.on("/playlist.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/playlist.html"); });
+    server.on("/books.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/books.html"); });
+    server.on("/shows.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/shows.html"); });
+    server.on("/admin.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/admin.html"); });
+    server.on("/games.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/games.html"); });
+    server.on("/maps.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/maps.html"); });
+    server.on("/menu.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/menu.html"); });
+    server.on("/gallery.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/gallery.html"); });
+    server.on("/files.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/files.html"); });
+    server.on("/filebrowser.html", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/filebrowser.html"); });
+    // Path redirects
+    server.on("/movies", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/movies.html"); });
+    server.on("/music", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/music.html"); });
+    server.on("/playlist", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/playlist.html"); });
+    server.on("/books", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/books.html"); });
+    server.on("/shows", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/shows.html"); });
+    server.on("/admin", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/admin.html"); });
+    server.on("/games", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/games.html"); });
+    server.on("/maps", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/maps.html"); });
+    server.on("/menu", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/menu.html"); });
+    server.on("/gallery", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/gallery.html"); });
+    server.on("/files", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/files.html"); });
+    server.on("/filebrowser", HTTP_GET, [](AsyncWebServerRequest *request) { serveProtectedFile(request, "/filebrowser.html"); });
     // Serve root directory and default to index.html
-    server.serveStatic("/", SD_MMC, "/").setDefaultFile("index.html");
+    server.onNotFound([](AsyncWebServerRequest *request) {
+        String url = request->url();
+        
+        // Handle captive portal detection first
+        String userAgent = "";
+        if (request->hasHeader("User-Agent")) userAgent = request->header("User-Agent");
+        
+        // Block WhatsApp link preview requests
+        if (userAgent.indexOf("WAChat") >= 0 || userAgent.indexOf("WhatsApp") >= 0) {
+            request->send(204);
+            return;
+        }
+        
+        // Check if it's a file request (has extension or specific paths)
+        if (url.indexOf('.') > 0 || url.startsWith("/Gallery") || url.startsWith("/Files") || 
+            url.startsWith("/Movies") || url.startsWith("/Music") || url.startsWith("/Books") || 
+            url.startsWith("/Shows") || url.startsWith("/Archive")) {
+            
+            // Handle as file request with SD mutex protection
+            String filePath = url;
+            if (!filePath.startsWith("/")) filePath = "/" + filePath;
+            
+            // Take SD mutex before any SD operations
+            if (sdMutex) {
+                if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+                    request->send(503, "text/plain", "SD busy");
+                    return;
+                }
+            }
+            
+            auto releaseSd = [&](){
+                if (sdMutex) xSemaphoreGive(sdMutex);
+            };
+            // Check if file exists
+                          
+            bool fileExists = SD_MMC.exists(filePath);
+
+            if (!fileExists) {
+                releaseSd();
+                
+                // Try index.html for directory requests
+                if (!filePath.endsWith("/")) filePath += "/";
+                filePath += "index.html";
+                
+                if (sdMutex && xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+                    request->send(503, "text/plain", "SD busy");
+                    return;
+                }
+                
+                bool indexExists = SD_MMC.exists(filePath);
+
+                if (!indexExists) {
+                    releaseSd();
+                    request->send(404, "text/plain", "File not found");
+                    return;
+                }
+            }
+            
+            // Serve the file
+            String mime = getMimeType(filePath);
+            AsyncWebServerResponse *response = request->beginResponse(SD_MMC, filePath, mime);
+            releaseSd();
+            
+            response->addHeader("Accept-Ranges", "bytes");
+            response->addHeader("Cache-Control", "public, max-age=600");
+            request->send(response);
+            return;
+        }
+    
+    // Handle captive portal redirects for non-file requests
+    if (userAgent.length()) {
+        if (userAgent.indexOf("iPhone") >= 0 || userAgent.indexOf("iPad") >= 0 || userAgent.indexOf("Macintosh") >= 0) {
+            request->send(SD_MMC, "/appleindex.html", "text/html");
+            return;
+        }
+    }
+    
+    request->send(SD_MMC, "/index.html", "text/html");
+});
     server.serveStatic("/Gallery", SD_MMC, "/Gallery")
           .setCacheControl("max-age=86400");
     server.serveStatic("/Files", SD_MMC, "/Files")
