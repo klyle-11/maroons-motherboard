@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Version 2.2 -->
+<!-- Version 2.3 -->
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -215,6 +215,43 @@
     justify-content:center;
     box-sizing:border-box;
   }
+  /* Resume episode title styling */
+.resume-episode-title {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 28px; /* Above the time overlay */
+  background: rgba(0,0,0,0.75);
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 10px;
+  z-index: 3;
+  max-width: 90%;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.resume-episode-title .marquee {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  position: relative;
+  height: 14px;
+  width: 100%;
+}
+
+.resume-episode-title .m-inner {
+  display: inline-block;
+  white-space: nowrap;
+  will-change: transform;
+}
+
+.resume-episode-title .m-inner span {
+  display: inline-block;
+  white-space: nowrap;
+}
   .resume-thumb { width:100%; height:100%; display:block; position:relative; }
   .resume-thumb img{ width:100%; height:100%; object-fit:cover; display:block; }
   .fallback-text { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:2; text-align:center; font-weight:700; color:var(--text); padding:8px; background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent); }
@@ -283,6 +320,42 @@
   .marquee{display:block;white-space:nowrap;overflow:hidden;position:relative;height:20px; max-width:100%;}
   .m-inner{display:inline-block;white-space:nowrap; will-change:transform}
   .m-inner span{display:inline-block; white-space:nowrap;}
+  /* Remove button for resume items */
+.resume-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  background: rgba(255, 0, 0, 0.8);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  opacity: 0;
+  transition: opacity 0.2s, transform 0.2s;
+  transform: scale(0.8);
+}
+
+.resume-item:hover .resume-remove {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.resume-remove:hover {
+  background: rgba(255, 0, 0, 1);
+  transform: scale(1.1);
+}
+
+.resume-remove:active {
+  transform: scale(0.95);
+}
 </style>
 </head>
 <body>
@@ -347,7 +420,7 @@ const RE_VIDEO = /\.(mp4|mkv|avi|mov|ts|webm|m4v)$/i;
 const RE_AUDIO = /\.(mp3|flac|wav|m4a|aac|ogg)$/i;
 const RE_IMAGE = /\.(jpe?g|png|webp|gif|heic|avif)$/i;
 const RE_BOOK  = /\.(pdf|epub|mobi|azw3|txt)$/i;
-const DISABLE_ZIM = false; // Set to true to disable ZIM functionality (doesnt work rn so leave it off)
+const DISABLE_ZIM = true; // Set to true to disable ZIM functionality (doesnt work rn so leave it off)
 
 // debug logger 
 const __debugEl = null;
@@ -1308,9 +1381,12 @@ function renderResume(items){
   resumePanel.style.display = 'block';
 }
 
-
 function makeResumeNode(it, compact=false, showMarqueeForShows=false){
-  const node = document.createElement('div'); node.className = 'resume-item'; node.setAttribute('role','button');
+  const node = document.createElement('div'); 
+  node.className = 'resume-item'; 
+  node.setAttribute('role','button');
+  node.style.position = 'relative';
+  
   const thumb = document.createElement('div'); thumb.className = 'resume-thumb';
   const fallback = document.createElement('div'); fallback.className = 'fallback-text'; fallback.textContent = it.title || it.path.split('/').pop();
   thumb.appendChild(fallback);
@@ -1328,7 +1404,57 @@ function makeResumeNode(it, compact=false, showMarqueeForShows=false){
     thumb.appendChild(iconWrap);
   }
 
-  const overlay = document.createElement('div'); overlay.className = 'resume-overlay small';
+  // Check if this is a show episode
+  const isShow = (it.path||'').toLowerCase().includes('/shows/');
+  
+  // For shows: Add episode title with marquee scrolling
+  if(isShow && it.title) {
+    const episodeTitle = document.createElement('div');
+    episodeTitle.className = 'resume-episode-title';
+    
+    // Create scrolling marquee for episode title similar to shows.html
+    const marquee = document.createElement('div');
+    marquee.className = 'marquee';
+    const inner = document.createElement('div');
+    inner.className = 'm-inner';
+    const span1 = document.createElement('span');
+    const span2 = document.createElement('span');
+    
+    span1.textContent = it.title;
+    span2.textContent = it.title;
+    
+    inner.appendChild(span1);
+    inner.appendChild(span2);
+    marquee.appendChild(inner);
+    episodeTitle.appendChild(marquee);
+    
+    // Animate the marquee
+    requestAnimationFrame(() => {
+      const textWidth = span1.getBoundingClientRect().width || (it.title.length * 7);
+      const containerWidth = episodeTitle.getBoundingClientRect().width || 120;
+      
+      if (textWidth > containerWidth - 16) { // Only scroll if text is longer than container
+        span1.style.paddingRight = '40px';
+        const totalWidth = textWidth + 40;
+        const duration = Math.max(6, Math.min(20, totalWidth / 20));
+        
+        // Create unique keyframes for this marquee
+        const keyName = `episode-scroll-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+        const rule = `@keyframes ${keyName} { 0% { transform: translateX(0); } 100% { transform: translateX(-${totalWidth}px); } }`;
+        const style = document.createElement('style');
+        style.textContent = rule;
+        document.head.appendChild(style);
+        
+        inner.style.animation = `${keyName} ${duration}s linear infinite`;
+      }
+    });
+    
+    thumb.appendChild(episodeTitle);
+  }
+
+  // Time overlay (positioned below episode title for shows)
+  const overlay = document.createElement('div'); 
+  overlay.className = 'resume-overlay small';
   overlay.style.opacity = '0';
   overlay.style.transform = 'translateY(6px)';
   overlay.style.display = 'flex';
@@ -1337,41 +1463,34 @@ function makeResumeNode(it, compact=false, showMarqueeForShows=false){
   overlay.style.left = '50%';
   overlay.style.transform = 'translateX(-50%) translateY(6px)';
   overlay.style.maxWidth = '86%';
-
-  if(showMarqueeForShows && (it.path||'').toLowerCase().includes('/shows/')){
-    const epName = it.title || it.path.split('/').pop() || '';
-    const timeText = it.position ? formatTimeSeconds(it.position) : '';
-    const label = `${epName}${timeText ? ' • ' + timeText : ''}`;
-    const marquee = createScrollingMarquee(label);
-    const marqueewrap = document.createElement('div');
-    marqueewrap.style.display = 'flex';
-    marqueewrap.style.alignItems = 'center';
-    marqueewrap.style.justifyContent = 'center';
-    marqueewrap.style.width = '100%';
-    marqueewrap.style.maxWidth = '100%';
-    marqueewrap.style.overflow = 'hidden';
-    marqueewrap.style.borderRadius = '999px';
-    marqueewrap.style.padding = '2px 6px';
-    marqueewrap.style.background = 'rgba(0,0,0,0.45)';
-    marqueewrap.style.color = '#fff';
-    marqueewrap.appendChild(marquee);
-    overlay.innerHTML = '';
-    overlay.style.padding = '8px 10px';
-    overlay.appendChild(marqueewrap);
-  } else {
-    overlay.textContent = it.position ? formatTimeSeconds(it.position) : '0s';
-  }
+  overlay.textContent = it.position ? formatTimeSeconds(it.position) : '0s';
+  
   thumb.appendChild(overlay);
 
-  // animate overlay in slightly
+  // Animate overlay in
   requestAnimationFrame(()=> {
     overlay.style.transition = 'opacity .28s cubic-bezier(.2,.9,.2,1), transform .28s cubic-bezier(.2,.9,.2,1)';
     overlay.style.opacity = '1';
     overlay.style.transform = 'translateX(-50%) translateY(0)';
   });
 
-  node.appendChild(thumb);
+  // CREATE REMOVE BUTTON
+  const removeBtn = document.createElement('button');
+  removeBtn.className = 'resume-remove';
+  removeBtn.innerHTML = '×';
+  removeBtn.title = 'Remove from resume';
+  removeBtn.setAttribute('aria-label', 'Remove from resume');
+  
+  // Remove button click handler
+  removeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    removeResumeItem(it.path);
+  });
 
+  node.appendChild(thumb);
+  node.appendChild(removeBtn);
+
+  // Resume item click handler
   node.addEventListener('click', ()=> {
     const p = it.path || '';
     if((p||'').toLowerCase().includes('/movies/')) window.location.href = `/movies#open=${encodeURIComponent(p)}`;
@@ -1387,6 +1506,56 @@ function makeResumeNode(it, compact=false, showMarqueeForShows=false){
   return node;
 }
 
+/* Remove item from resume cache and refresh display */
+async function removeResumeItem(itemPath) {
+  if (!itemPath) return;
+  
+  // Find and modify localStorage data
+  for (const key of RESUME_KEYS) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      
+      let parsed = tryParseJSONSafe(raw);
+      if (!parsed) continue;
+      
+      let modified = false;
+      
+      if (Array.isArray(parsed)) {
+        // Remove item from array
+        const originalLength = parsed.length;
+        parsed = parsed.filter(item => {
+          const path = item.path || item.file || item.p || item.url || '';
+          return path !== itemPath;
+        });
+        modified = parsed.length !== originalLength;
+      } else if (typeof parsed === 'object') {
+        // Handle object format (key-value pairs)
+        const keys = Object.keys(parsed);
+        for (const k of keys) {
+          const pathPart = k.split('|')[0] || k;
+          if (pathPart === itemPath) {
+            delete parsed[k];
+            modified = true;
+            break;
+          }
+        }
+      }
+      
+      if (modified) {
+        // Save back to localStorage
+        localStorage.setItem(key, JSON.stringify(parsed));
+        
+        // Refresh the resume display
+        const updatedItems = await collectResumeItems();
+        renderResume(updatedItems);
+        break;
+      }
+    } catch (e) {
+      console.warn('Error removing resume item:', e);
+    }
+  }
+}
 /* ---------------- SEARCH UI & Logic ---------------- */
 function escapeHtml(s){ if(!s) return ''; return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 function shortenPath(p){ if(!p) return ''; const parts = p.split('/'); if(parts.length <= 3) return p; return '…' + parts.slice(-3).join('/'); }
