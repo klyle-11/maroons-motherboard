@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- Nomad Files Page -->
-<!-- Version 2.2 -->
+<!-- Version 2.3 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -377,7 +377,7 @@
 
       fileListEl.innerHTML = filtered.map(file => `
         <li>
-          <a href="${file.path.startsWith('/') ? file.path : ('/' + file.path)}" download="${file.name}">${file.name}</a>
+        <a href="/Files/${file.name}" download="${file.name}">${file.name}</a>
           <div class="file-info">${formatBytes(file.size)} • ${file.type.toUpperCase()}</div>
         </li>
       `).join('');
