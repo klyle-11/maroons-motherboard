@@ -1181,13 +1181,13 @@ loopBtn.addEventListener('click', ()=> {
   updateLoopButtonUI();
 });
 
-/* download uses API endpoint with download param (more portable than raw path) */
+/* download */
 downloadBtn.addEventListener('click', ()=> {
   if(!currentPlaylist || currentIndex < 0 || !currentPlaylist[currentIndex]) return;
   const item = currentPlaylist[currentIndex];
   const a = document.createElement('a');
-  a.href = apiFileUrl(item.path, true);
-  a.setAttribute('download', item.file || 'download');
+  a.href = directUrl(item.path);
+  a.download = item.file || 'download';
   document.body.appendChild(a);
   a.click();
   setTimeout(()=> { try{ document.body.removeChild(a); }catch(e){} }, 50);
@@ -1196,7 +1196,7 @@ downloadBtn.addEventListener('click', ()=> {
 /* shuffle */
 shuffleBtn.addEventListener('click', ()=> { shuffleCurrent(); });
 
-/* sort toggle - try to preserve current track position if practical */
+/* sort toggle */
 sortBtn.addEventListener('click', ()=> {
   sortAsc = !sortAsc;
   sortBtn.textContent = sortAsc ? 'A → Z' : 'Z → A';
