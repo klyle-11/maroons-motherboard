@@ -1,11 +1,7 @@
 //Jcorp Nomad Project
 #include "Arduino.h"
 #define FF_USE_FASTSEEK 1
-#define SD_FREQ_KHZ 10000         // ✱✱ VERY IMPORTANT SETTING ✱✱
-                                  // This controls how fast reads from your SD Card can go, If you have a name brand fancy card you can go faster with better results. Check what your card recomends. 
-                                  // 10 000 kHz (10 MHz) = safest 
-                                  // 12000 kHz (12 MHz) = good 
-                                  // 20000 kHz (20 MHz) = fastest 
+#define SD_FREQ_KHZ 10000
 #include "WiFi.h"
 #include "ESPAsyncWebServer.h"
 #include "FS.h"
@@ -22,6 +18,7 @@
 #include "esp_wifi.h"
 #include "usb_mode.h"
 #include "boot_mode.h" // custom library for firmware switching
+#include <map>
 void launch_usb_mode() {
 extern void usb_setup();
 extern void usb_loop();
@@ -41,6 +38,10 @@ unsigned long lastTempReading = 0;
 float currentTempC = 0.0;
 static bool sdScanned = false;
 const uint32_t SD_SCAN_DELAY = 5000;  // milliseconds after boot
+static TaskHandle_t indexTaskHandle = NULL;
+static std::map<AsyncWebServerRequest*, String> gBodyBuf;
+std::map<AsyncWebServerRequest*, String> renameBodies;
+std::map<AsyncWebServerRequest*, String> renameBodyBuffer;
 // ==================== CONFIGURATION ====================
 
 // Max number of devices that can connect at once
@@ -174,25 +175,121 @@ void requestOneTimeGenerate() {
 void clearOneTimeGenerate() {
     SD_MMC.remove("/generate_once.flag");
 }
-//------------------- delete recursive for admin -------------
 bool deleteRecursive(String path) {
-  File entry = SD_MMC.open(path);
-  if (!entry) return false;
+  path = sanitizePath(path);
+  if (!path.startsWith("/")) path = "/" + path;
 
-  if (!entry.isDirectory()) {
+  std::vector<String> dirsToRemove;
+  std::vector<String> stack;
+  stack.push_back(path);
+
+  bool anyFailures = false;
+
+  while (!stack.empty()) {
+    String p = stack.back();
+    stack.pop_back();
+
+    File entry = SD_MMC.open(p);
+    if (!entry) {
+      // might be already removed, continue
+      continue;
+    }
+
+    if (!entry.isDirectory()) {
+      entry.close();
+      if (!SD_MMC.remove(p)) {
+        Serial.println("[DEL] Failed to remove file: " + p);
+        anyFailures = true;
+      } else {
+        // enqueue parent to refresh index
+        String parent = "/";
+        int s = p.lastIndexOf('/');
+        if (s > 0) parent = p.substring(0, s);
+        enqueueDir(parent);
+      }
+      yield();
+      continue;
+    }
+
+    // It's a directory: list children, push them to stack, then schedule dir for removal
+    File child;
+    entry.rewindDirectory(); // if supported
+    while ((child = entry.openNextFile())) {
+      String childPath = p + "/" + child.name();
+      // push child for deletion
+      stack.push_back(childPath);
+      child.close();
+      yield();
+    }
     entry.close();
-    return SD_MMC.remove(path);
+
+    // schedule this dir for removal after children removed
+    dirsToRemove.push_back(p);
+    yield();
   }
 
-  File child;
-  while ((child = entry.openNextFile())) {
-    String childPath = String(path) + "/" + child.name();
-    deleteRecursive(childPath);
-    child.close();
+  // remove directories in reverse order (deepest first)
+  for (int i = (int)dirsToRemove.size() - 1; i >= 0; --i) {
+    String d = dirsToRemove[i];
+    if (!SD_MMC.rmdir(d)) {
+      Serial.println("[DEL] Failed to rmdir: " + d);
+      anyFailures = true;
+    } else {
+      String parent = "/";
+      int s = d.lastIndexOf('/');
+      if (s > 0) parent = d.substring(0, s);
+      enqueueDir(parent);
+    }
+    yield();
   }
 
-  entry.close();
-  return SD_MMC.rmdir(path);
+  return !anyFailures;
+}
+
+static String sanitizePath(const String &in) {
+  if (in.length() == 0) return "/";
+  String s = in;
+
+  // Canonicalize slashes
+  s.replace('\\', '/');
+
+  // Trim whitespace
+  s.trim();
+
+  // Remove duplicate slashes
+  while (s.indexOf("//") >= 0) s.replace("//", "/");
+
+  // Prepend leading slash
+  if (!s.startsWith("/")) s = "/" + s;
+
+  // Strip trailing slashes (keep root)
+  while (s.length() > 1 && s.endsWith("/")) s.remove(s.length() - 1);
+
+  // Resolve "." and ".."
+  std::vector<String> parts;
+  int start = 1; // skip leading '/'
+  while (start <= s.length()) {
+    int slash = s.indexOf('/', start);
+    String seg = (slash >= 0) ? s.substring(start, slash)
+                              : s.substring(start);
+    if (seg.length() > 0 && seg != ".") {
+      if (seg == "..") {
+        if (!parts.empty()) parts.pop_back();
+      } else {
+        parts.push_back(seg);
+      }
+    }
+    if (slash < 0) break;
+    start = slash + 1;
+  }
+
+  String out = "/";
+  for (size_t i = 0; i < parts.size(); ++i) {
+    out += parts[i];
+    if (i + 1 < parts.size()) out += "/";
+  }
+  if (out.length() == 0) out = "/";
+  return out;
 }
 
 
@@ -221,6 +318,398 @@ String rfc3339Now() {
 const byte DNS_PORT = 53;
 DNSServer dnsServer;
 AsyncWebServer server(80); // Web server on port 80
+// ----------------------- System Index (per-dir NDJSON) -----------------------
+// New: small, low-memory indexing system using per-directory NDJSON files
+// Index directory: "/.system-index/"
+// Index filename mapping: "/Movies/Kids" -> "/.system-index/Movies__Kids.index.ndjson"
+
+#include <time.h> // for timestamps used in manifest
+
+// --- Simple FNV-1a 64-bit for a compact rolling directory signature ---
+static uint64_t fnv1a64_update(const void *data, size_t len, uint64_t h = 14695981039346656037ULL) {
+    const uint8_t *p = (const uint8_t *)data;
+    for (size_t i = 0; i < len; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+static String hashToHex(uint64_t h) {
+    char buf[33];
+    snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)h);
+    return String(buf);
+}
+
+// --- Safe index path encoding: replace '/' with "__" and drop leading '/' ---
+static String encodeIndexPath(const String &dirPath) {
+    String p = dirPath;
+    if (!p.startsWith("/")) p = "/" + p;
+    // remove trailing slash except for root
+    while (p.length() > 1 && p.endsWith("/")) p.remove(p.length() - 1);
+    String enc = p.substring(1); // drop leading slash
+    enc.replace("/", "__");
+    if (enc.length() == 0) enc = "_root";
+    return String("/.system-index/") + enc + ".index.ndjson";
+}
+static String encodeTmpPath(const String &dirPath) {
+    return encodeIndexPath(dirPath) + ".tmp";
+}
+
+// --- Minimal escape for JSON strings (name field) ---
+static String jsonEscaped(const String &s) {
+    String out;
+    out.reserve(s.length() + 8);
+    for (size_t i = 0; i < s.length(); ++i) {
+        char c = s[i];
+        if (c == '\\') out += "\\\\";
+        else if (c == '"') out += "\\\"";
+        else if (c == '\n') out += "\\n";
+        else out += c;
+    }
+    return out;
+}
+
+// --- Small ring queue for directories to index (de-dupes on enqueue) ---
+#define INDEX_QUEUE_SIZE 256
+static String indexQueueArr[INDEX_QUEUE_SIZE];
+static volatile uint16_t indexQueueHead = 0;
+static volatile uint16_t indexQueueTail = 0;
+static portMUX_TYPE indexQueueMux = portMUX_INITIALIZER_UNLOCKED;
+
+static void enqueueDir(const String &dir) {
+    String d = dir;
+    if (!d.startsWith("/")) d = "/" + d;
+    // normalize: remove trailing slash unless root
+    while (d.length() > 1 && d.endsWith("/")) d.remove(d.length() - 1);
+
+    // de-dup linear scan (small overhead; queue small)
+    portENTER_CRITICAL(&indexQueueMux);
+    for (uint16_t i = indexQueueHead; i != indexQueueTail; i = (i + 1) % INDEX_QUEUE_SIZE) {
+        if (indexQueueArr[i] == d) { portEXIT_CRITICAL(&indexQueueMux); return; }
+    }
+    uint16_t next = (indexQueueTail + 1) % INDEX_QUEUE_SIZE;
+    if (next == indexQueueHead) {
+        // queue full — drop oldest (policy: remove head)
+        indexQueueHead = (indexQueueHead + 1) % INDEX_QUEUE_SIZE;
+    }
+    indexQueueArr[indexQueueTail] = d;
+    indexQueueTail = next;
+    portEXIT_CRITICAL(&indexQueueMux);
+}
+
+static bool dequeueDir(String &out) {
+    portENTER_CRITICAL(&indexQueueMux);
+    if (indexQueueHead == indexQueueTail) { portEXIT_CRITICAL(&indexQueueMux); return false; }
+    out = indexQueueArr[indexQueueHead];
+    indexQueueHead = (indexQueueHead + 1) % INDEX_QUEUE_SIZE;
+    portEXIT_CRITICAL(&indexQueueMux);
+    return true;
+}
+// ---------------------- Nested index writer (3-level) ----------------------
+// Writes a nested JSON index for directories like /Music or /Shows
+// Streaming writer: writes to tmp file then patches header like indexDirectory()
+static void writeDirRecursive(const String &path, File &out, int depth, int maxDepth,
+                              uint64_t &rollingHash, uint32_t &count) {
+  // Open directory
+  File d = SD_MMC.open(path);
+  if (!d || !d.isDirectory()) {
+    if (d) d.close();
+    return;
+  }
+
+  d.rewindDirectory();
+
+  bool firstChild = true;
+  while (true) {
+    File e = d.openNextFile();
+    if (!e) break;
+    String name = String(e.name());
+
+    // comma between siblings
+    if (!firstChild) out.print(",");
+    firstChild = false;
+
+    if (e.isDirectory()) {
+      // Write directory object start
+      out.print("{\"n\":\""); out.print(jsonEscaped(name)); out.print("\",\"t\":\"d\"");
+      // Update rolling hash (dir marker) and count
+      String key = name + String("|d|0|0\n");
+      rollingHash = fnv1a64_update((const void*)key.c_str(), key.length(), rollingHash);
+      ++count;
+
+      // If depth not exceeded, write children array
+      if (depth + 1 <= maxDepth) {
+        out.print(",\"children\":[");
+        // recurse into child (path + "/" + name)
+        String childPath = path;
+        if (!childPath.endsWith("/")) childPath += "/";
+        childPath += name;
+        // recurse (this will write the whole child array inline)
+        writeDirRecursive(childPath, out, depth + 1, maxDepth, rollingHash, count);
+        out.print("]");
+      }
+      out.print("}");
+    } else {
+      // file object
+      uint64_t fsz = e.size();
+      out.print("{\"n\":\""); out.print(jsonEscaped(name)); out.print("\",\"t\":\"f\",\"sz\":");
+      out.print(String(fsz));
+      out.print("}");
+      // update rolling hash for file
+      String key = name + String("|f|") + String(fsz) + String("|0\n");
+      rollingHash = fnv1a64_update((const void*)key.c_str(), key.length(), rollingHash);
+      ++count;
+    }
+
+    e.close();
+    // throttle occasionally so tasks stay responsive
+    if ((count & 0x3F) == 0) vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  d.close();
+}
+
+// Top-level nested index writer. maxDepth: 2 -> base + 2 = 3 levels (Artist/Album/Track)
+// Flattening nested index writer (3-level flattened -> NDJSON compatible with indexDirectory)
+// This writes a single NDJSON index where the first line is a header JSON and every
+// subsequent line is a JSON entry for a single file/dir: {"n":"name","p":"/full/path","t":"d"|"f","sz":size}
+static void indexDirectoryNested(const String &dir, int maxDepth = 2) {
+  if (!SD_MMC.exists("/.system-index")) SD_MMC.mkdir("/.system-index");
+
+  String tmpPath = encodeTmpPath(dir);
+  String finalPath = encodeIndexPath(dir);
+
+  File tmp = SD_MMC.open(tmpPath, FILE_WRITE);
+  if (!tmp) {
+    Serial.println("[IndexNested] ERROR: cannot open tmp index file: " + tmpPath);
+    return;
+  }
+
+  // Write a placeholder header (we'll patch it later with actual sig/count)
+  tmp.println("{\"_type\":\"dir\",\"path\":\"" + dir + "\",\"generated\":0,\"sig\":\"\",\"count\":0}");
+
+  // We'll create a flat list of entries by recursively walking up to maxDepth
+  uint64_t rollingHash = 14695981039346656037ULL; // FNV-1a seed (same as fnv1a64_update default)
+  uint32_t count = 0;
+
+  // Helper recursion: write every entry in flat form
+  std::function<void(const String&, int)> walk;
+  walk = [&](const String &path, int depth) {
+    File d = SD_MMC.open(path);
+    if (!d || !d.isDirectory()) {
+      if (d) d.close();
+      return;
+    }
+    d.rewindDirectory();
+
+    while (true) {
+      File e = d.openNextFile();
+      if (!e) break;
+
+      String name = String(e.name());
+      // build normalized full path
+      String full = path;
+      if (!full.endsWith("/")) full += "/";
+      full += name;
+
+      if (e.isDirectory()) {
+        // Emit directory entry (flat)
+        tmp.print("{\"n\":\""); tmp.print(jsonEscaped(name));
+        tmp.print("\",\"p\":\""); tmp.print(full);
+        tmp.print("\",\"t\":\"d\"}\n");
+
+        // update rolling hash and count (directory marker)
+        String key = full + String("|d|0|0\n");
+        rollingHash = fnv1a64_update((const void *)key.c_str(), key.length(), rollingHash);
+        ++count;
+
+        // Recurse if depth allows
+        if (depth + 1 <= maxDepth) {
+          walk(full, depth + 1);
+        }
+      } else {
+        // File entry
+        uint32_t fsz = (uint32_t)e.size();
+        tmp.print("{\"n\":\""); tmp.print(jsonEscaped(name));
+        tmp.print("\",\"p\":\""); tmp.print(full);
+        tmp.print("\",\"t\":\"f\",\"sz\":"); tmp.print(String(fsz));
+        tmp.print("}\n");
+
+        String key = full + String("|f|") + String(fsz) + String("|0\n");
+        rollingHash = fnv1a64_update((const void *)key.c_str(), key.length(), rollingHash);
+        ++count;
+      }
+
+      e.close();
+
+      // throttle: keep system responsive on very large trees
+      if ((count & 0x3F) == 0) vTaskDelay(pdMS_TO_TICKS(1));
+    }
+
+    d.close();
+  };
+
+  // Kick off recursion from the base dir
+  walk(dir, 0);
+
+  // Final signature
+  String sig = hashToHex(rollingHash);
+
+  // Seek back to beginning and patch header with sig/count and generated timestamp
+  tmp.seek(0);
+  String header = "{\"_type\":\"dir\",\"path\":\"" + dir + "\",\"generated\":" + String((uint32_t)time(NULL)) + ",\"sig\":\"" + sig + "\",\"count\":" + String(count) + "}\n";
+  tmp.print(header);
+  tmp.close();
+
+  // Atomically replace final index file
+  if (SD_MMC.exists(finalPath)) SD_MMC.remove(finalPath);
+  SD_MMC.rename(tmpPath, finalPath);
+
+  // Update the manifest/lookup so other logic can see this directory's sig/count
+  updateManifestEntry(dir, sig, count);
+
+  Serial.printf("[Index] Wrote nested-flat index for %s (count=%u sig=%s)\n", dir.c_str(), count, sig.c_str());
+}
+
+
+// Forward declarations
+static void indexDirectory(const String &dir);
+
+// --- Index task ---
+static void IndexTask(void *pvParameters) {
+    (void)pvParameters;
+    for (;;) {
+        String path;
+        if (!dequeueDir(path)) {
+            vTaskDelay(pdMS_TO_TICKS(250)); // idle wait when nothing to do
+            continue;
+        }
+        // Small delay to batch multiple enqueues that may follow quickly
+        vTaskDelay(pdMS_TO_TICKS(10));
+        indexDirectory(path);
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
+
+// Helper: write/update manifest.json atomically
+static void updateManifestEntry(const String &fileName, const String &filePath, uint32_t fileSize) {
+    File file = SD_MMC.open("/media.json", FILE_READ);
+    DynamicJsonDocument doc(32768);  
+    if (file) {
+        DeserializationError err = deserializeJson(doc, file);
+        file.close();
+    }
+    if (!doc.containsKey("roots")) {
+        doc.createNestedArray("roots");
+    }
+
+    JsonArray roots = doc["roots"].as<JsonArray>();
+
+    // add or update entry
+    JsonObject entry = roots.createNestedObject();
+    entry["name"] = fileName;
+    entry["path"] = filePath;
+    entry["size"] = fileSize;
+
+    // save back
+    file = SD_MMC.open("/media.json", FILE_WRITE);
+    if (file) {
+        serializeJson(doc, file);
+        file.close();
+    }
+}
+
+// --- indexDirectory: stream index -> tmp -> rename; compute signature and count ---
+static void indexDirectory(const String &dirPath) {
+    // Ensure index dir exists
+    if (!SD_MMC.exists("/.system-index")) SD_MMC.mkdir("/.system-index");
+
+    // Normalize directory path
+    String dir = dirPath;
+    if (!dir.startsWith("/")) dir = "/" + dir;
+    while (dir.length() > 1 && dir.endsWith("/")) dir.remove(dir.length() - 1);
+
+    // --- Special-case three-level nested indexing for Music and Shows ---
+    String dirLower = dir;
+    dirLower.toLowerCase();
+    if (dirLower == "/music" || dirLower == "/shows") {
+        Serial.println("[Index] Nested indexing for " + dir);
+        indexDirectoryNested(dir, 2);
+        return;
+    }
+
+    // Try to open the dir on SD
+    File d = SD_MMC.open(dir);
+    if (!d) {
+        // nothing to do, maybe removed — ensure index removed
+        String finalPath = encodeIndexPath(dir);
+        if (SD_MMC.exists(finalPath)) SD_MMC.remove(finalPath);
+        updateManifestEntry(dir, "", 0);
+        return;
+    }
+
+    String tmpPath = encodeTmpPath(dir);
+    String finalPath = encodeIndexPath(dir);
+
+    // Open tmp file for streaming
+    File tmp = SD_MMC.open(tmpPath, FILE_WRITE);
+    if (!tmp) {
+        Serial.println("[Index] ERROR: cannot open tmp index file: " + tmpPath);
+        return;
+    }
+
+    // Placeholder header line (we'll seek back and rewrite)
+    tmp.println("{\"_type\":\"dir\",\"path\":\"" + dir + "\",\"version\":1,\"generated\":0,\"sig\":\"\",\"count\":0}");
+    uint64_t rollingHash = 14695981039346656037ULL;
+    uint32_t count = 0;
+
+    // Iterate entries — write NDJSON lines
+    d.rewindDirectory(); // ensure starting at beginning
+    while (true) {
+        File e = d.openNextFile();
+        if (!e) break;
+        yield();
+
+        String name = String(e.name());
+        String type = e.isDirectory() ? "d" : "f";
+        uint64_t size = e.size();
+        uint32_t mtime = 0;
+        // If mtime is available elsewhere, fill it. Placeholder 0 if not.
+        // (If you have proper mtime via FatFs/SD_MMC, plug it in here.)
+
+        // Compose simple row and write
+        String line = "{\"n\":\"" + jsonEscaped(name) + "\",\"t\":\"" + type + "\",\"sz\":" + String(size) + ",\"mt\":" + String(mtime) + "}";
+        tmp.println(line);
+
+        // Update rolling hash with name|type|size|mtime (text)
+        String key = name + "|" + type + "|" + String(size) + "|" + String(mtime) + "\n";
+        rollingHash = fnv1a64_update((const void *)key.c_str(), key.length(), rollingHash);
+
+        ++count;
+
+        // Throttle a little so WiFi remains responsive on big dirs
+        if ((count & 0x3F) == 0) vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    tmp.flush();
+
+    // Final signature
+    String sig = hashToHex(rollingHash);
+
+    // Patch header: seek to beginning and write final header line
+    tmp.seek(0);
+    String header = "{\"_type\":\"dir\",\"path\":\"" + dir + "\",\"version\":1,\"generated\":" + String((uint32_t)time(NULL)) + ",\"sig\":\"" + sig + "\",\"count\":" + String(count) + "}\n";
+    tmp.print(header);
+    tmp.close();
+
+    // Atomically replace
+    if (SD_MMC.exists(finalPath)) SD_MMC.remove(finalPath);
+    SD_MMC.rename(tmpPath, finalPath);
+
+    // Update manifest
+    updateManifestEntry(dir, sig, count);
+
+    Serial.printf("[Index] Wrote index for %s (count=%u sig=%s)\n", dir.c_str(), count, sig.c_str());
+}
+
 std::map<AsyncWebServerRequest*, File> activeUploads;
 int connectedClients = 0;
 // LED Mode and Color Helper Wrappers
@@ -328,246 +817,46 @@ bool isValidExtension(const String& filename, const std::vector<String>& exts) {
 }
 
 void generateMediaJSON() {
-    // ─── 1) Open the JSON file ───
-    File jsonFile = SD_MMC.open("/media.json", FILE_WRITE);
-    if (!jsonFile) {
-        Serial.println("[MediaGen] ERROR: cannot open media.json for writing");
-        return;
+    // Backwards-compatible alias: start the new indexing system (non-blocking).
+    Serial.println("[MediaGen] generateMediaJSON() now boots per-dir indexer (non-blocking).");
+    if (!SD_MMC.exists("/.system-index")) SD_MMC.mkdir("/.system-index");
+
+    // Start index task if not already started
+    if (indexTaskHandle == NULL) {
+        BaseType_t ok = xTaskCreate(IndexTask, "IndexTask", 8192, NULL, 1, &indexTaskHandle);
+        if (ok != pdPASS) {
+            Serial.println("[MediaGen] ERROR: failed to start IndexTask");
+            indexTaskHandle = NULL;
+        } else {
+            Serial.println("[MediaGen] IndexTask started.");
+        }
+    } else {
+        Serial.println("[MediaGen] IndexTask already running, skipping create.");
     }
 
-    // ─── 2) Write opening brace ───
-    jsonFile.println("{");
+    // Enqueue top-level roots to build initial indexes
+    enqueueDir("/");
+    enqueueDir("/Movies");
+    enqueueDir("/Shows");
+    enqueueDir("/Books");
+    enqueueDir("/Music");
+    enqueueDir("/Gallery");
+    enqueueDir("/Files");
 
-    // ─── 3) Initialize LVGL status screen ───
-    lv_obj_clear_flag(ui_MediaGen, LV_OBJ_FLAG_HIDDEN);
-    String logBuf = "Generating media.json...\n";
-    int logCount = 0;
-    const int LOG_UPDATE_INTERVAL = 20;
-    lv_textarea_set_text(ui_MediaGen, logBuf.c_str());
-    lv_timer_handler();
-
-    // Helper lambda to flush log
-    auto flushLog = [&]() {
-        lv_textarea_set_text(ui_MediaGen, logBuf.c_str());
-        lv_textarea_set_cursor_pos(ui_MediaGen, logBuf.length());
-        lv_timer_handler();
-        logBuf = "";
-        logCount = 0;
-    };
-
-    // ─── 4) Movies ───
-    jsonFile.println("  \"movies\": [");
-    File moviesDir = SD_MMC.open("/Movies");
-    bool firstMovie = true;
-    std::vector<String> movieExts = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".wmv", ".flv", ".mpg", ".mpeg", ".ts", ".3gp"};
-    while (File file = moviesDir.openNextFile()) {
-        yield();
-        String fname = String(file.name());
-        String ext = fname.substring(fname.lastIndexOf('.'));
-        ext.toLowerCase();
-        if (!file.isDirectory() && isValidExtension(fname, movieExts)) {
-            if (!firstMovie) jsonFile.println(",");
-            firstMovie = false;
-            String base = getFileBaseName(fname);
-            String cover = SD_MMC.exists("/Movies/" + base + ".jpg") ? "movies/" + base + ".jpg" : "placeholder.jpg";
-
-            jsonFile.print("    { \"name\": \"" + base + "\", \"cover\": \"" + cover + "\", \"file\": \"Movies/" + base + ext + "\" }");
-
-            logBuf += "- " + fname + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
+    // Write a small manifest if missing
+    if (!SD_MMC.exists("/.system-index/manifest.json")) {
+        StaticJsonDocument<512> doc;
+        doc["version"] = 1;
+        doc.createNestedArray("roots");
+        File m = SD_MMC.open("/.system-index/manifest.json.tmp", FILE_WRITE);
+        if (m) {
+            serializeJsonPretty(doc, m);
+            m.close();
+            SD_MMC.rename("/.system-index/manifest.json.tmp", "/.system-index/manifest.json");
         }
     }
-    jsonFile.println();
-    jsonFile.println("  ],");
-    flushLog();
-
-    // ─── 5) Shows ───
-    jsonFile.println("  \"shows\": [");
-    File showsRoot = SD_MMC.open("/Shows");
-    bool firstShow = true;
-    while (File folder = showsRoot.openNextFile()) {
-        yield();
-        if (folder.isDirectory()) {
-            if (!firstShow) jsonFile.println(",");
-            firstShow = false;
-            String showName = String(folder.name());
-            String cover = SD_MMC.exists("/Shows/" + showName + ".jpg") ? "shows/" + showName + ".jpg" : "placeholder.jpg";
-
-            jsonFile.println("    {\"name\": \"" + showName + "\", \"cover\": \"" + cover + "\", \"episodes\": [");
-
-            logBuf += "Show: " + showName + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-
-            File epDir = SD_MMC.open("/Shows/" + showName);
-            bool firstEp = true;
-            while (File ep = epDir.openNextFile()) {
-                yield();
-                String epName = String(ep.name());
-                String epExt = epName.substring(epName.lastIndexOf('.'));
-                epExt.toLowerCase();
-                if (!ep.isDirectory() && isValidExtension(epName, movieExts)) {
-                    if (!firstEp) jsonFile.println(",");
-                    firstEp = false;
-                    String epBase = getFileBaseName(epName);
-                    jsonFile.print("      { \"name\": \"" + epBase + "\", \"file\": \"Shows/" + showName + "/" + epBase + epExt + "\" }");
-
-                    logBuf += "  * " + epName + "\n";
-                    if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-                }
-            }
-            jsonFile.println();
-            jsonFile.println("    ]}");
-        }
-    }
-    jsonFile.println();
-    jsonFile.println("  ],");
-    flushLog();
-
-    // ─── 6) Books ───
-    jsonFile.println("  \"books\": [");
-    File booksDir = SD_MMC.open("/Books");
-    bool firstBook = true;
-    std::vector<String> bookExts = {".pdf", ".epub", ".mobi", ".azw3", ".txt"};
-    while (File file = booksDir.openNextFile()) {
-        yield();
-        String fname = String(file.name());
-        String ext = fname.substring(fname.lastIndexOf('.'));
-        if (!file.isDirectory() && isValidExtension(fname, bookExts)) {
-            if (!firstBook) jsonFile.println(",");
-            firstBook = false;
-            String base = getFileBaseName(fname);
-            String cover = SD_MMC.exists("/Books/" + base + ".jpg") ? "books/" + base + ".jpg" : "placeholder.jpg";
-
-            jsonFile.print("    { \"name\": \"" + base + "\", \"cover\": \"" + cover + "\", \"file\": \"Books/" + base + ext + "\" }");
-
-            logBuf += "- " + fname + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-        }
-    }
-    jsonFile.println();
-    jsonFile.println("  ],");
-    flushLog();
-
-    // ─── 7) Music ───
-    jsonFile.println("  \"music\": [");
-    File musicDir = SD_MMC.open("/Music");
-    bool firstMusic = true;
-    std::vector<String> musicExts = {".mp3", ".wav", ".flac"};
-    while (File file = musicDir.openNextFile()) {
-        yield();
-        String fname = String(file.name());
-        String ext = fname.substring(fname.lastIndexOf('.'));
-        ext.toLowerCase();
-        if (!file.isDirectory() && isValidExtension(fname, musicExts)) {
-            if (!firstMusic) jsonFile.println(",");
-            firstMusic = false;
-            String base = getFileBaseName(fname);
-            String cover = SD_MMC.exists("/Music/" + base + ".jpg") ? "music/" + base + ".jpg" : "placeholder.jpg";
-
-            jsonFile.print("    { \"name\": \"" + base + "\", \"cover\": \"" + cover + "\", \"file\": \"Music/" + base + ext + "\" }");
-
-            logBuf += "- " + fname + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-        }
-    }
-    jsonFile.println();
-    jsonFile.println("  ],");
-    flushLog();
-
-    // ─── 8) Playlists ───
-    jsonFile.println("  \"playlists\": {");
-    File musicRoot = SD_MMC.open("/Music");
-    bool firstPl = true;
-    while (File folder = musicRoot.openNextFile()) {
-        yield();
-        if (folder.isDirectory()) {
-            if (!firstPl) jsonFile.println(",");
-            firstPl = false;
-            String plName = String(folder.name());
-            jsonFile.println("    \"" + plName + "\": [");
-
-            logBuf += "Playlist: " + plName + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-
-            std::vector<String> tracks;
-            std::function<void(File,const String&)> collectTracks =
-                [&](File dir, const String& rel) {
-                    while (File t = dir.openNextFile()) {
-                        yield();
-                        String name = rel + "/" + String(t.name());
-                        if (t.isDirectory()) collectTracks(SD_MMC.open("/Music/" + name), name);
-                        else if (isValidExtension(name, musicExts)) tracks.push_back(name);
-                    }
-                };
-            collectTracks(SD_MMC.open("/Music/" + plName), plName);
-
-            for (size_t i = 0; i < tracks.size(); ++i) {
-                String tname = tracks[i].substring(tracks[i].lastIndexOf('/') + 1);
-                String base2 = getFileBaseName(tname);
-                String cover2 = SD_MMC.exists("/Music/" + base2 + ".jpg") ? "music/" + base2 + ".jpg" : "placeholder.jpg";
-                jsonFile.print("      { \"name\": \"" + base2 + "\", \"cover\": \"" + cover2 + "\", \"file\": \"Music/" + tracks[i] + "\" }");
-                if (i < tracks.size() - 1) jsonFile.println(",");
-
-                logBuf += "  * " + tname + "\n";
-                if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-            }
-            jsonFile.println();
-            jsonFile.println("    ]");
-        }
-    }
-    jsonFile.println("  },");
-    flushLog();
-
-    // ─── 9) Gallery ───
-    jsonFile.println("  \"gallery\": [");
-    File galleryDir = SD_MMC.open("/Gallery");
-    bool firstGal = true;
-    std::vector<String> mediaExts = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tiff", ".mp4", ".webm", ".mov", ".avi", ".mkv", ".flv"};
-    while (File f = galleryDir.openNextFile()) {
-        yield();
-        String fname = String(f.name());
-        String ext2 = fname.substring(fname.lastIndexOf('.')); ext2.toLowerCase();
-        if (!f.isDirectory() && isValidExtension(fname, mediaExts)) {
-            if (!firstGal) jsonFile.println(",");
-            firstGal = false;
-            String base = getFileBaseName(fname);
-            jsonFile.print("    { \"name\": \"" + base + "\", \"file\": \"Gallery/" + fname + "\" }");
-
-            logBuf += "- " + fname + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-        }
-    }
-    jsonFile.println();
-    jsonFile.println("  ],");
-    flushLog();
-
-    // ─── 10) Files ───
-    jsonFile.println("  \"files\": [");
-    File filesDir = SD_MMC.open("/Files");
-    bool firstFile = true;
-    while (File f = filesDir.openNextFile()) {
-        yield();
-        String fname = String(f.name());
-        if (!f.isDirectory()) {
-            if (!firstFile) jsonFile.println(",");
-            firstFile = false;
-            jsonFile.print("    { \"name\": \"" + fname + "\", \"file\": \"Files/" + fname + "\" }");
-
-            logBuf += "- " + fname + "\n";
-            if (++logCount % LOG_UPDATE_INTERVAL == 0) flushLog();
-        }
-    }
-    jsonFile.println();
-    jsonFile.println("  ]");
-    flushLog();
-
-    // ─── 11) Close JSON and finish ───
-    jsonFile.println("}");
-    jsonFile.close();
-
-    Serial.println("[MediaGen] media.json created successfully.");
-    lv_obj_add_flag(ui_MediaGen, LV_OBJ_FLAG_HIDDEN);
 }
+
 
 String absURL(const String &path) {
     return "http://" + WiFi.softAPIP().toString() + path;
@@ -864,44 +1153,286 @@ void handleListFiles(AsyncWebServerRequest *request) {
 }
 
 void handleFileUpload(AsyncWebServerRequest *request) {
-    if (!request->hasParam("dir", true)) {
-        request->send(400, "application/json", "{\"error\":\"Missing 'dir' form field\"}");
-        return;
-    }
-    String dir = request->getParam("dir", true)->value();
+    // If the request is just initiating upload (no file data yet)
+    if (request->method() == HTTP_POST) {
+        if (!request->hasParam("dir", true)) {
+            request->send(400, "application/json", "{\"error\":\"Missing 'dir' form field\"}");
+            return;
+        }
+        String dir = sanitizePath(request->getParam("dir", true)->value());
 
-    if (!SD_MMC.exists(dir) || !SD_MMC.open(dir).isDirectory()) {
-        request->send(404, "application/json", "{\"error\":\"Directory not found\"}");
-        return;
-    }
+        if (!SD_MMC.exists(dir)) {
+            // Try to create subdir if missing
+            if (!SD_MMC.mkdir(dir)) {
+                request->send(500, "application/json", "{\"error\":\"Failed to create directory\"}");
+                return;
+            }
+        }
 
-    request->send(200, "application/json", "{\"status\":\"Ready to upload\"}");
+        request->send(200, "application/json", "{\"status\":\"Upload handler ready\"}");
+    }
 }
+
+// AsyncWebServerUpload handler (handles chunks)
+void onUpload(AsyncWebServerRequest *request, const String& filename,
+              size_t index, uint8_t *data, size_t len, bool final) {
+    String dir = "/";
+    if (request->hasParam("dir", true)) {
+        dir = sanitizePath(request->getParam("dir", true)->value());
+    }
+
+    String path = dir + "/" + filename;
+
+    if (index == 0) {
+        // First chunk: open file
+        Serial.printf("[Upload] Starting: %s\n", path.c_str());
+
+        // Ensure parent directory exists
+        int slash = path.lastIndexOf('/');
+        if (slash > 0) {
+            String parentDir = path.substring(0, slash);
+            if (!SD_MMC.exists(parentDir)) {
+                SD_MMC.mkdir(parentDir);
+            }
+        }
+
+        request->_tempFile = SD_MMC.open(path, FILE_WRITE);
+        if (!request->_tempFile) {
+            Serial.printf("[Upload] Failed to open %s\n", path.c_str());
+            return;
+        }
+    }
+
+    if (len) {
+        // Write chunk
+        if (request->_tempFile) {
+            request->_tempFile.write(data, len);
+        }
+    }
+
+    if (final) {
+        // Last chunk: close file and enqueue parent dir for indexing
+        if (request->_tempFile) {
+            request->_tempFile.close();
+        }
+
+        Serial.printf("[Upload] Completed: %s (%u bytes)\n", path.c_str(), (unsigned int)(index + len));
+
+        String parent = "/";
+        int s = path.lastIndexOf('/');
+        if (s > 0) parent = path.substring(0, s);
+
+        enqueueDir(parent);  // refresh directory index only once
+    }
+}
+
+// Helper: basic URL decode (handles %20, %2F etc. — enough for common cases)
+static String urlDecode(const String &str) {
+  String res;
+  res.reserve(str.length());
+  char buf[3] = {0,0,0};
+  for (size_t i = 0; i < str.length(); ++i) {
+    char c = str[i];
+    if (c == '%' && i + 2 < str.length()) {
+      buf[0] = str[i+1]; buf[1] = str[i+2];
+      int val = (int)strtol(buf, NULL, 16);
+      res += (char)val;
+      i += 2;
+    } else if (c == '+') {
+      res += ' ';
+    } else {
+      res += c;
+    }
+  }
+  return res;
+}
+// Helper: URL-decode (keeps your existing urlDecode if present; reuse it if already defined)
+static String urlDecodeSimple(const String &s) {
+  String res;
+  res.reserve(s.length());
+  char a, b;
+  for (size_t i = 0; i < s.length(); ++i) {
+    char c = s[i];
+    if (c == '%' && i + 2 < s.length()) {
+      a = s[i+1]; b = s[i+2];
+      char hex[3] = { a, b, 0 };
+      int v = (int)strtol(hex, NULL, 16);
+      res += (char)v;
+      i += 2;
+    } else if (c == '+') {
+      res += ' ';
+    } else {
+      res += c;
+    }
+  }
+  return res;
+}
+
+// Core rename performer: normalizes, tries tolerant variants and performs the SD rename.
+// Returns true on success and sends appropriate response via request.
+static bool doRename(const String &rawOld, const String &rawNew, AsyncWebServerRequest *request) {
+  // Parse / decode
+  String oldRaw = rawOld;
+  String newRaw = rawNew;
+
+  if (oldRaw.indexOf('%') >= 0) oldRaw = urlDecodeSimple(oldRaw);
+  if (newRaw.indexOf('%') >= 0) newRaw = urlDecodeSimple(newRaw);
+
+    // Always decode (not conditional) and preserve leading slash
+    String oldCandidate = urlDecodeSimple(rawOld);
+    String newCandidate = urlDecodeSimple(rawNew);
+
+    // Defensive: ensure path starts with '/' (Nomad requires absolute paths)
+    if (!oldCandidate.startsWith("/")) oldCandidate = "/" + oldCandidate;
+    if (!newCandidate.startsWith("/")) newCandidate = "/" + newCandidate;
+
+    // Collapse duplicate slashes
+    while (oldCandidate.indexOf("//") >= 0) oldCandidate.replace("//", "/");
+    while (newCandidate.indexOf("//") >= 0) newCandidate.replace("//", "/");
+
+
+  // Defensive: collapse duplicate slashes
+  while (oldCandidate.indexOf("//") >= 0) oldCandidate.replace("//", "/");
+  while (newCandidate.indexOf("//") >= 0) newCandidate.replace("//", "/");
+
+  Serial.printf("[RENAME] Attempting rename: '%s' -> '%s'\n", oldCandidate.c_str(), newCandidate.c_str());
+
+  // Tolerant attempts if source missing: strip duplicate-leading-slashes progressively
+  if (!SD_MMC.exists(oldCandidate)) {
+    String alt = oldCandidate;
+    while (alt.startsWith("//")) alt = alt.substring(1); // remove one leading slash
+    if (alt != oldCandidate && SD_MMC.exists(alt)) {
+      oldCandidate = alt;
+      Serial.printf("[RENAME] Found alt source: '%s'\n", oldCandidate.c_str());
+    }
+  }
+
+  if (!SD_MMC.exists(oldCandidate)) {
+    Serial.printf("[RENAME] Source not found after attempts: '%s'\n", oldCandidate.c_str());
+    if (request) request->send(404, "application/json", String("{\"error\":\"Original file not found\",\"tried\":\"") + oldCandidate + "\"}");
+    return false;
+  }
+
+  // If destination exists, remove it (overwrite behaviour)
+  if (SD_MMC.exists(newCandidate)) {
+    Serial.println("[RENAME] Target exists, removing: " + newCandidate);
+    if (!SD_MMC.remove(newCandidate)) {
+      if (request) request->send(500, "application/json", "{\"error\":\"Failed to remove existing destination\"}");
+      return false;
+    }
+  }
+
+  // Ensure destination parent exists
+  String parentNew = "/";
+  int s2 = newCandidate.lastIndexOf('/');
+  if (s2 > 0) parentNew = newCandidate.substring(0, s2);
+  if (!SD_MMC.exists(parentNew)) SD_MMC.mkdir(parentNew);
+
+  bool ok = SD_MMC.rename(oldCandidate, newCandidate);
+  if (ok) {
+    // enqueue parent dirs for indexing
+    String parentOld = "/";
+    int s = oldCandidate.lastIndexOf('/');
+    if (s > 0) parentOld = oldCandidate.substring(0, s);
+
+    enqueueDir(parentOld);
+    if (parentNew != parentOld) enqueueDir(parentNew);
+
+    Serial.printf("[RENAME] Success: '%s' -> '%s'\n", oldCandidate.c_str(), newCandidate.c_str());
+    if (request) request->send(200, "application/json", "{\"ok\":true}");
+    return true;
+  } else {
+    Serial.printf("[RENAME] Failed to rename '%s' -> '%s'\n", oldCandidate.c_str(), newCandidate.c_str());
+    if (request) request->send(500, "application/json", "{\"error\":\"Rename failed\"}");
+    return false;
+  }
+}
+
 void handleRename(AsyncWebServerRequest *request) {
-    if (!request->hasParam("oldname", true) || !request->hasParam("newname", true)) {
-        request->send(400, "application/json", "{\"error\":\"Missing parameters\"}");
+    if (renameBodyBuffer.find(request) == renameBodyBuffer.end()) {
+        request->send(400, "text/plain", "Missing rename body");
+        return;
+    }
+    String body = renameBodyBuffer[request];
+
+    renameBodies.erase(request);  // cleanup memory
+
+    DynamicJsonDocument doc(256);
+    DeserializationError error = deserializeJson(doc, body);
+    if (error) {
+        request->send(400, "text/plain", "Invalid JSON");
         return;
     }
 
-    String oldName = request->getParam("oldname", true)->value();
-    String newName = request->getParam("newname", true)->value();
+    String oldPath = doc["old"] | "";
+    String newPath = doc["new"] | "";
 
-    if (!SD_MMC.exists(oldName)) {
-        request->send(404, "application/json", "{\"error\":\"Original file not found\"}");
+    if (oldPath.isEmpty() || newPath.isEmpty()) {
+        request->send(400, "text/plain", "Missing parameters");
         return;
     }
 
-    if (SD_MMC.exists(newName)) {
-        request->send(409, "application/json", "{\"error\":\"Target file already exists\"}");
+    Serial.printf("[RENAME] raw old:'%s' raw new:'%s'\n", oldPath.c_str(), newPath.c_str());
+
+    // Ensure leading slash
+    if (!oldPath.startsWith("/")) oldPath = "/" + oldPath;
+    if (!newPath.startsWith("/")) newPath = "/" + newPath;
+
+    if (SD_MMC.exists(oldPath)) {
+        if (SD_MMC.rename(oldPath, newPath)) {
+            Serial.printf("[RENAME] Success: '%s' -> '%s'\n", oldPath.c_str(), newPath.c_str());
+            request->send(200, "application/json", "{\"success\":true}");
+        } else {
+            request->send(500, "text/plain", "Rename failed");
+        }
+    } else {
+        Serial.printf("[RENAME] Source not found: '%s'\n", oldPath.c_str());
+        request->send(404, "text/plain", "Source file not found");
+    }
+}
+
+void handleRenameBody(AsyncWebServerRequest *request, uint8_t *data, size_t len,
+                      size_t index, size_t total) {
+    if (index == 0) {
+    if (!renameBodyBuffer.count(request)) {
+        renameBodyBuffer[request] = "";
+    }
+    renameBodyBuffer[request].concat((const char*)data, len);
+
+    if (index + len == total) {
+        Serial.printf("[RENAME] Full body received (%u bytes)\n", total);
+    }
+}
+                      
+void handleRenameEnd(AsyncWebServerRequest *request) {
+    if (!renameBodyBuffer.count(request)) {
+        request->send(400, "text/plain", "Missing body buffer");
+        return;
+    }
+    String body = renameBodyBuffer[request];
+    renameBodyBuffer.erase(request); // cleanup after processing
+
+
+    DynamicJsonDocument doc(512);
+    auto error = deserializeJson(doc, body);
+    if (error) {
+        request->send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
         return;
     }
 
-    if (SD_MMC.rename(oldName, newName)) {
-        request->send(200, "application/json", "{\"status\":\"Rename successful\"}");
+    String oldPath = doc["oldPath"] | "";
+    String newPath = doc["newPath"] | "";
+
+    Serial.printf("[RENAME] Attempting rename: '%s' -> '%s'\n", oldPath.c_str(), newPath.c_str());
+
+    if (SD_MMC.rename(oldPath, newPath)) {
+        Serial.printf("[RENAME] Success: '%s' -> '%s'\n", oldPath.c_str(), newPath.c_str());
+        request->send(200, "application/json", "{\"success\":true}");
     } else {
         request->send(500, "application/json", "{\"error\":\"Rename failed\"}");
     }
 }
+
 void handleDelete(AsyncWebServerRequest *request) {
     if (!request->hasParam("filename", true)) {
         request->send(400, "application/json", "{\"error\":\"Missing 'filename' parameter\"}");
@@ -915,70 +1446,37 @@ void handleDelete(AsyncWebServerRequest *request) {
         return;
     }
 
+    // Normalize path to absolute form for parent calculation
+    String path = filename;
+    if (!path.startsWith("/")) path = "/" + path;
+
     bool success = false;
-    File f = SD_MMC.open(filename);
+    File f = SD_MMC.open(path);
     if (f && f.isDirectory()) {
-        success = SD_MMC.rmdir(filename);
+        success = SD_MMC.rmdir(path);
     } else {
-        success = SD_MMC.remove(filename);
+        success = SD_MMC.remove(path);
     }
 
     if (success) {
         request->send(200, "application/json", "{\"status\":\"Delete successful\"}");
+
+        // enqueue the parent directory so the indexer will refresh it
+        int slash = path.lastIndexOf('/');
+        String parent = "/";
+        if (slash > 0) parent = path.substring(0, slash);
+        enqueueDir(parent);
     } else {
         request->send(500, "application/json", "{\"error\":\"Delete failed\"}");
     }
 }
 
 
+
 std::map<AsyncWebServerRequest*, String> uploadPaths;
 File uploadFile;
 
-void onUploadHandler(AsyncWebServerRequest *request, const String& filename, size_t index,
-                     uint8_t *data, size_t len, bool final) {
-    if (index == 0) {
-        String dir = "/";
-        if (request->hasParam("dir", true)) {
-            dir = request->getParam("dir", true)->value();
-        }
-        if (!dir.startsWith("/")) dir = "/" + dir;
-        if (dir.endsWith("/")) dir.remove(dir.length() - 1);
-
-        String fullPath = dir + "/" + filename;
-
-        if (SD_MMC.exists(fullPath)) {
-            Serial.println("[Upload] Duplicate file blocked: " + fullPath);
-            request->send(409, "application/json", "{\"error\":\"File already exists\"}");
-            return;
-        }
-
-        int slashPos = fullPath.lastIndexOf('/');
-        if (slashPos != -1) {
-            String parent = fullPath.substring(0, slashPos);
-            SD_MMC.mkdir(parent);
-        }
-
-        Serial.println("[Upload] Starting upload to: " + fullPath);
-        uploadFile = SD_MMC.open(fullPath, FILE_WRITE);
-        if (!uploadFile) {
-            Serial.println("[Upload] Failed to open: " + fullPath);
-            return;
-        }
-        uploadPaths[request] = fullPath;
-    }
-
-    if (uploadFile) {
-        uploadFile.write(data, len);
-    }
-
-    if (final) {
-        Serial.println("[Upload] Complete: " + uploadPaths[request]);
-        uploadFile.close();
-        uploadPaths.erase(request);
-        request->send(200, "application/json", "{\"status\":\"Upload complete\"}");
-    }
-}
-
+// --- createSimpleUploadHandler with overwrite support and index enqueue ---
 void createSimpleUploadHandler(const String& mediaFolder, const char* endpoint) {
     server.on(endpoint, HTTP_POST,
         [](AsyncWebServerRequest *request) {
@@ -987,30 +1485,84 @@ void createSimpleUploadHandler(const String& mediaFolder, const char* endpoint) 
         [mediaFolder](AsyncWebServerRequest *request, const String& filename, size_t index,
                       uint8_t *data, size_t len, bool final) {
 
+            static std::map<AsyncWebServerRequest*, File> uploadsLocal;
+            static std::map<AsyncWebServerRequest*, String> uploadPathsLocal;
+
             if (index == 0) {
                 String fullPath = "/" + mediaFolder + "/" + filename;
+                fullPath = sanitizePath(fullPath);
+
                 Serial.println("[Upload] Starting upload to: " + fullPath);
+
+                // Overwrite flags handling
+                bool overwrite = false;
+                auto checkFlag = [&](const char *name)->bool {
+                    if (!request->hasParam(name, true)) return false;
+                    String v = request->getParam(name, true)->value();
+                    v.toLowerCase();
+                    return (v == "1" || v == "true" || v == "yes");
+                };
+                if (checkFlag("overwrite") || checkFlag("force") || checkFlag("replace")) overwrite = true;
+
+                if (SD_MMC.exists(fullPath)) {
+                    if (!overwrite) {
+                        Serial.println("[Upload] Duplicate file (no overwrite): " + fullPath);
+                        // Note: cannot reliably call request->send() while inside chunk in some setups, so just abort
+                        return;
+                    }
+                    Serial.println("[Upload] Overwrite requested; removing: " + fullPath);
+                    if (!SD_MMC.remove(fullPath)) {
+                        Serial.println("[Upload] Failed to remove existing before overwrite: " + fullPath);
+                        return;
+                    }
+                    delay(20); yield();
+                }
+
+                // Ensure parent folder exists
+                int slashPos = fullPath.lastIndexOf('/');
+                if (slashPos != -1) {
+                    String folder = fullPath.substring(0, slashPos);
+                    if (!SD_MMC.exists(folder)) {
+                        SD_MMC.mkdir(folder);
+                        delay(10); yield();
+                    }
+                }
+
                 File f = SD_MMC.open(fullPath, FILE_WRITE);
                 if (!f) {
-                    Serial.println("[Upload] Failed to open file for writing");
+                    Serial.println("[Upload] Failed to open file for writing: " + fullPath);
                     return;
                 }
-                activeUploads[request] = f;
+                uploadsLocal[request] = f;
+                uploadPathsLocal[request] = fullPath;
             }
 
-            if (activeUploads.count(request)) {
-                activeUploads[request].write(data, len);
-                Serial.printf("[Upload] Written %u bytes to %s\n", len, filename.c_str());
+            // write chunk
+            if (uploadsLocal.count(request)) {
+                uploadsLocal[request].write(data, len);
+                Serial.printf("[Upload] chunk write %u for %s\n", (unsigned)len, filename.c_str());
             }
 
-            if (final && activeUploads.count(request)) {
-                Serial.println("[Upload] Upload complete for: " + filename);
-                activeUploads[request].close();
-                activeUploads.erase(request);
+            // final chunk
+            if (final && uploadsLocal.count(request)) {
+                uploadsLocal[request].close();
+                String saved = uploadPathsLocal[request];
+                uploadsLocal.erase(request);
+                uploadPathsLocal.erase(request);
+
+                // Enqueue the folder for indexing
+                int slash = saved.lastIndexOf('/');
+                String parent = "/";
+                if (slash > 0) parent = saved.substring(0, slash);
+                enqueueDir(parent);
+
+                Serial.println("[Upload] Completed: " + saved);
             }
         }
     );
 }
+// --- end createSimpleUploadHandler patch ---
+
 void scanSDCardUsage() {
     cachedUsedBytes = 0;
     cachedTotalBytes = SD_MMC.cardSize();
@@ -1073,6 +1625,7 @@ bool checkGenerateFlagFile() {
     }
     return false;
 }
+// ----- AFTER -----
 void handleConnector(AsyncWebServerRequest *request) {
   // 1) Get 'dir' from POST body
   String dir = "/";
@@ -1081,14 +1634,58 @@ void handleConnector(AsyncWebServerRequest *request) {
   }
   if (!dir.endsWith("/")) dir += "/";
 
-  // 2) Open the directory 
+  // Try to serve from per-dir index (fast)
+  String idxPath = encodeIndexPath(dir);
+  if (SD_MMC.exists(idxPath)) {
+    File idx = SD_MMC.open(idxPath, "r");
+    if (!idx) {
+      request->send(500, "text/plain", "Failed to open index");
+      return;
+    }
+    String html = "<ul class=\"jqueryFileTree\" style=\"display: none;\">";
+    String line;
+    // skip header line (first line in the NDJSON is a header for the dir)
+    bool firstLine = true;
+    while (idx.available()) {
+      line = idx.readStringUntil('\n');
+      if (line.length() <= 1) continue;
+      if (firstLine) { firstLine = false; continue; } // skip dir header
+      StaticJsonDocument<256> jd;
+      DeserializationError err = deserializeJson(jd, line);
+      if (err) {
+        // malformed line: skip
+        continue;
+      }
+      // Expect fields: "n" (name), "t" (type: 'd' or 'f')
+      const char *name = jd["n"] | "";
+      const char *type = jd["t"] | "f";
+      if (String(type) == "d") {
+        html += "<li class=\"directory collapsed\">"
+             "<a href=\"#\" rel=\"" + dir + String(name) + "/\">" + String(name) + "</a>"
+             "</li>";
+      } else {
+        // attempt to extract extension
+        String sname = String(name);
+        int dot = sname.lastIndexOf('.');
+        String ext = (dot > 0) ? sname.substring(dot + 1) : "";
+        html += "<li class=\"file ext_" + ext + "\">"
+             "<a href=\"#\" rel=\"" + dir + String(name) + "\">" + String(name) + "</a>"
+             "</li>";
+      }
+    }
+    idx.close();
+    html += "</ul>";
+    request->send(200, "text/html", html);
+    return;
+  }
+
+  // Fallback to scanning SD directly (original behavior)
   File root = SD_MMC.open(dir);
   if (!root || !root.isDirectory()) {
     request->send(400, "text/plain", "Invalid directory");
     return;
   }
 
-  // 3) Build the HTML <ul> tree
   String html = "<ul class=\"jqueryFileTree\" style=\"display: none;\">";
   root.rewindDirectory();
   File entry;
@@ -1108,10 +1705,9 @@ void handleConnector(AsyncWebServerRequest *request) {
     entry.close();
   }
   html += "</ul>";
-
-  // 4) Respond
   request->send(200, "text/html", html);
 }
+
 void handleMkdir(AsyncWebServerRequest *request) {
     if (!request->hasParam("dir", true)) {
         request->send(400, "application/json", "{\"error\":\"Missing 'dir' parameter\"}");
@@ -1252,17 +1848,32 @@ void setup() {
         SD_MMC.remove("/boot_done.flag");
     }
 
-    // Generate if needed
+    // Generate if needed -> bootstrap per-dir indexing (non-blocking)
     if (shouldGenerate && !SD_MMC.exists("/boot_done.flag")) {
-        Serial.println("[BOOT] Media generation required. Generating media.json...");
-        generateMediaJSON();
+        Serial.println("[BOOT] Indexing required. Bootstrapping system index...");
 
+        // Ensure index dir exists
+        if (!SD_MMC.exists("/.system-index")) SD_MMC.mkdir("/.system-index");
+
+        // Start index background task (low priority, small stack)
+        xTaskCreate(IndexTask, "IndexTask", 8192, NULL, 1, NULL);
+
+        // Enqueue top-level roots to be indexed (page builders)
+        enqueueDir("/");
+        enqueueDir("/Movies");
+        enqueueDir("/Shows");
+        enqueueDir("/Books");
+        enqueueDir("/Music");
+        enqueueDir("/Gallery");
+        enqueueDir("/Files");
+
+        // Mark boot_done so this bootstrap runs only once unless requested later
         File flagFile = SD_MMC.open("/boot_done.flag", FILE_WRITE);
         if (flagFile) {
             flagFile.println("done");
             flagFile.close();
         }
-        Serial.println("[BOOT] media.json generated. Boot will continue.");
+        Serial.println("[BOOT] System index bootstrap queued. Boot will continue.");
 
         if (generateOnce) {
             clearOneTimeGenerate();
@@ -1757,35 +2368,60 @@ Set_Backlight(settings.brightness);  // now using loaded value
           .setCacheControl("max-age=86400");
     server.serveStatic("/Files", SD_MMC, "/Files")
           .setCacheControl("max-age=86400");
+// --- Robust /upload handler (supports overwrite flags and index enqueue) ---
 server.on(
   "/upload", HTTP_POST,
-  // Final response when upload is complete
+  // Final response (we respond inside the chunk handler)
   [](AsyncWebServerRequest *request) {
-    // Response is handled during final chunk or error
+    // Intentionally empty. Final response is sent in chunk handler to allow immediate error.
   },
-  // Upload handler
+  // Upload chunk handler
   [](AsyncWebServerRequest *request, const String &filename, size_t index,
      uint8_t *data, size_t len, bool final) {
 
+    // Per-request state: file handles and path
     static std::map<AsyncWebServerRequest *, File> uploads;
+    static std::map<AsyncWebServerRequest *, String> uploadPaths;
 
-    // Begin upload
+    // BEGIN new chunk
     if (index == 0) {
       String dir = "/";
       if (request->hasParam("dir", true)) {
-        dir = request->getParam("dir", true)->value();
+        dir = sanitizePath(request->getParam("dir", true)->value());
       }
-
       if (!dir.startsWith("/")) dir = "/" + dir;
-      if (dir.endsWith("/")) dir.remove(dir.length() - 1);
+      if (dir.length() > 1 && dir.endsWith("/")) dir.remove(dir.length() - 1);
 
       String fullPath = dir + "/" + filename;
 
-      // Check for duplicate
+      // Check overwrite flags in incoming form (multiple names supported)
+      bool overwrite = false;
+      auto checkFlag = [&](const char *name)->bool {
+        if (!request->hasParam(name, true)) return false;
+        String v = request->getParam(name, true)->value();
+        v.toLowerCase();
+        return (v == "1" || v == "true" || v == "yes");
+      };
+      if (checkFlag("overwrite") || checkFlag("force") || checkFlag("replace")) {
+        overwrite = true;
+      }
+
+      // If file exists and no overwrite requested -> 409 conflict
       if (SD_MMC.exists(fullPath)) {
-        Serial.println("[Upload] Duplicate file detected: " + fullPath);
-        request->send(409, "application/json", "{\"error\":\"File already exists\"}");
-        return;
+        if (!overwrite) {
+          Serial.println("[Upload] Duplicate file detected: " + fullPath);
+          request->send(409, "application/json", "{\"error\":\"File already exists\"}");
+          return;
+        }
+        // Overwrite requested: remove existing before opening
+        Serial.println("[Upload] Overwrite requested; removing existing: " + fullPath);
+        if (!SD_MMC.remove(fullPath)) {
+          Serial.println("[Upload] Failed to remove existing file: " + fullPath);
+          request->send(500, "application/json", "{\"error\":\"Failed to remove existing file\"}");
+          return;
+        }
+        delay(20); // tiny breather for some SD hardware
+        yield();
       }
 
       // Ensure directory exists
@@ -1793,10 +2429,13 @@ server.on(
       if (slashPos != -1) {
         String folder = fullPath.substring(0, slashPos);
         if (!SD_MMC.exists(folder)) {
+          Serial.println("[Upload] Creating folder: " + folder);
           SD_MMC.mkdir(folder);
+          delay(10); yield();
         }
       }
 
+      // Open file (truncates / creates)
       File f = SD_MMC.open(fullPath, FILE_WRITE);
       if (!f) {
         Serial.println("[Upload] Failed to open file: " + fullPath);
@@ -1805,23 +2444,39 @@ server.on(
       }
 
       uploads[request] = f;
+      uploadPaths[request] = fullPath;
       Serial.println("[Upload] Started: " + fullPath);
     }
 
-    // Continue writing data
+    // Write chunk
     if (uploads.count(request)) {
       uploads[request].write(data, len);
+      Serial.printf("[Upload] Wrote %u bytes for %s\n", (unsigned)len, filename.c_str());
+    } else {
+      // No file handle for this request - log and abort
+      Serial.println("[Upload] No active handle for request - aborting chunk write");
+      // nothing to send here (the client will see failure)
     }
 
-    // Finalize upload
+    // Finalize
     if (final && uploads.count(request)) {
       uploads[request].close();
+      String uploadedPath = uploadPaths[request];
       uploads.erase(request);
-      Serial.println("[Upload] Finished");
+      uploadPaths.erase(request);
+
+      // Notify indexer of parent directory so the UI sees the file immediately
+      int slash = uploadedPath.lastIndexOf('/');
+      String parent = "/";
+      if (slash > 0) parent = uploadedPath.substring(0, slash);
+      Serial.println("[Upload] Complete: " + uploadedPath + " -> enqueue " + parent);
+      enqueueDir(parent);
+
       request->send(200, "application/json", "{\"status\":\"Upload successful\"}");
     }
   }
 );
+// --- end /upload handler patch ---
 
 server.on("/list-assets", HTTP_GET, [](AsyncWebServerRequest *request){
   if (!request->hasParam("dir")) {
@@ -1870,11 +2525,6 @@ server.on("/mkdir", HTTP_POST, [](AsyncWebServerRequest *request) {
         return;
     }
 
-    // Remove trailing slash, if present
-    if (dirName.endsWith("/")) {
-        dirName.remove(dirName.length() - 1);
-    }
-
     // Check if the path already exists
     if (SD_MMC.exists(dirName)) {
         request->send(409, "text/plain", "Directory already exists");
@@ -1884,6 +2534,17 @@ server.on("/mkdir", HTTP_POST, [](AsyncWebServerRequest *request) {
     // Attempt to create the directory
     if (SD_MMC.mkdir(dirName)) {
         request->send(200, "text/plain", "OK");
+
+        // Enqueue parent and the new directory for indexing.
+        // Parent:
+        String parent = dirName;
+        int slash = parent.lastIndexOf('/');
+        if (slash > 0) parent = parent.substring(0, slash);
+        else parent = "/";
+
+        enqueueDir(parent);
+        // Enqueue the new dir too (so an empty index is created)
+        enqueueDir(dirName);
     } else {
         request->send(500, "text/plain", "Failed to create directory");
     }
@@ -1892,7 +2553,66 @@ server.on("/mkdir", HTTP_POST, [](AsyncWebServerRequest *request) {
 
 static std::map<AsyncWebServerRequest*, String> uploadPaths;
 server.on("/media", HTTP_GET, handleRangeRequest); // THE MOST IMPORTANT ONE
-server.on("/rename", HTTP_POST, handleRename);
+// Collect bodies for JSON posts (single place, once)
+server.onRequestBody([](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+  // We only care about /rename POST with application/json
+  if (request->method() != HTTP_POST) return;
+  if (request->url() != "/rename") return;
+
+  if (index == 0) g_bodyBuf[request] = "";
+  g_bodyBuf[request].reserve(total);
+  g_bodyBuf[request].concat((const char*)data, len);
+
+  if (index + len == total) {
+    // nothing else here; handler will parse & erase it
+  }
+});
+
+// The /rename handler accepts either form fields or JSON body
+server.on("/rename", HTTP_POST, [](AsyncWebServerRequest *request){
+  String oldname, newname;
+
+  // 1) Try form/x-www-form-urlencoded fields first
+  if (request->hasParam("oldname", true) && request->hasParam("newname", true)) {
+    oldname = request->getParam("oldname", true)->value();
+    newname = request->getParam("newname", true)->value();
+  } else {
+    // 2) Try JSON body from g_bodyBuf
+    auto it = g_bodyBuf.find(request);
+    if (it != g_bodyBuf.end()) {
+      DynamicJsonDocument d(1024);
+      DeserializationError err = deserializeJson(d, it->second);
+      g_bodyBuf.erase(it);
+      if (!err) {
+        if (d.containsKey("oldname")) oldname = String(d["oldname"].as<const char*>());
+        if (d.containsKey("newname")) newname = String(d["newname"].as<const char*>());
+        // Support aliases (src/dst)
+        if (oldname.length()==0 && d.containsKey("src")) oldname = String(d["src"].as<const char*>());
+        if (newname.length()==0 && d.containsKey("dst")) newname = String(d["dst"].as<const char*>());
+      }
+    }
+  }
+
+  oldname = sanitizePath(oldname);
+  newname = sanitizePath(newname);
+
+  if (oldname.length() == 0 || newname.length() == 0) {
+    request->send(400, "application/json", "{\"error\":\"Missing oldname/newname\"}");
+    return;
+  }
+
+  doRename(oldname, newname, request);
+});
+server.on("/raw", HTTP_GET, [](AsyncWebServerRequest *request){
+  if (!request->hasParam("path")) { request->send(400, "text/plain", "Missing path"); return; }
+  String path = sanitizePath(request->getParam("path")->value());
+  File f = SD_MMC.open(path, FILE_READ);
+  if (!f) { request->send(404, "text/plain", "Not found"); return; }
+  AsyncWebServerResponse *res = request->beginResponse(f, String("application/octet-stream"));
+  res->addHeader("Content-Disposition", "attachment; filename=\"" + String(pathToFileName(path)) + "\"");
+  request->send(res);
+});
+
 server.on("/delete", HTTP_POST, handleDelete);
 server.on("/connector", HTTP_POST,
   [](AsyncWebServerRequest *request){
@@ -1959,6 +2679,16 @@ server.on("/save", HTTP_POST, [](AsyncWebServerRequest *request){
 
   size_t bytesWritten = f.print(content);
   f.close();
+
+  // notify indexer
+  String parent = "/";
+  String p = sanitizePath(path);
+  int slash = p.lastIndexOf('/');
+  if (slash > 0) parent = p.substring(0, slash);
+  enqueueDir(parent);
+
+  request->send(200, "text/plain", "OK");
+
 
   Serial.printf("[SAVE] Bytes written: %d\n", bytesWritten);
 
@@ -2050,6 +2780,127 @@ server.on("/settings", HTTP_POST, [](AsyncWebServerRequest *request){
 
   server.on("/cpu-temp", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "application/json", String("{\"temp\":") + currentTempC + "}");
+  });
+  server.on("/api/index", HTTP_GET, [](AsyncWebServerRequest *request) {
+    if (!request->hasParam("path")) {
+      request->send(400, "application/json", "{\"error\":\"Missing path param\"}");
+      return;
+    }
+
+    String pathParam = request->getParam("path")->value();
+    pathParam = urlDecode(pathParam);
+    if (pathParam.length() == 0) pathParam = "/";
+
+    // Normalize: ensure leading slash, collapse //, strip /./, handle .. safely
+    pathParam = sanitizePath(pathParam);
+    if (!pathParam.startsWith("/")) pathParam = "/" + pathParam;
+
+    // Fast path: exact index file exists? stream it
+    String idxPath = encodeIndexPath(pathParam);
+    if (SD_MMC.exists(idxPath)) {
+      File f = SD_MMC.open(idxPath, FILE_READ);
+      if (!f) {
+        request->send(500, "application/json", "{\"error\":\"Failed to open index\"}");
+        return;
+      }
+      AsyncWebServerResponse *res = request->beginResponse(f, encodeIndexPath(pathParam), "application/x-ndjson", true);
+      request->send(res);
+      return;
+    }
+
+    // Fallback for subdirectories: we only build flat nested indices at bucket roots (e.g. /Shows, /Music).
+    // Determine the bucket for this path (first segment).
+    String bucket = "/";
+    {
+      // Find first segment after the leading slash
+      int p = pathParam.indexOf('/', 1);
+      if (p < 0) {
+        // path is like "/Shows" or "/Music" (exact), we already handled exact-file case above → 404 if missing
+        request->send(404, "application/json", "{\"error\":\"Index not found\"}");
+        return;
+      }
+      bucket = pathParam.substring(0, p); // e.g. "/Shows"
+    }
+
+    // Only fallback for known nested-flat buckets (extend if needed)
+    if (bucket != "/Shows" && bucket != "/Music") {
+      request->send(404, "application/json", "{\"error\":\"Index not found\"}");
+      return;
+    }
+
+    String bucketIdx = encodeIndexPath(bucket);
+    if (!SD_MMC.exists(bucketIdx)) {
+      request->send(404, "application/json", "{\"error\":\"Index not found\"}");
+      return;
+    }
+
+    File f = SD_MMC.open(bucketIdx, FILE_READ);
+    if (!f) {
+      request->send(500, "application/json", "{\"error\":\"Failed to open base index\"}");
+      return;
+    }
+
+    // We stream-filter: only emit entries whose "p" starts with the requested path (subdir).
+    // Format is newline-delimited JSON (NDJSON). We include entries as-is.
+    AsyncResponseStream *stream = request->beginResponseStream("application/x-ndjson");
+
+    // Optionally, write a small header line identifying this view (kept minimal to stay compatible).
+    // If you don't want any header meta line, comment the next line.
+    stream->print("{\"_type\":\"dir\",\"path\":\"");
+    // Escape quotes minimally (no quotes expected in pathParam normally).
+    stream->print(pathParam);
+    stream->println("\"}");
+
+    // Read line by line
+    String line;
+    line.reserve(512);
+    while (f.available()) {
+      char c = (char)f.read();
+      if (c == '\n') {
+        // Process one JSON line
+        if (line.length() > 0) {
+          // Very small/cheap filter: look for `"p":"<pathParam>`
+          // If present at any position and the value starts with pathParam + '/' OR equals pathParam (dir record), emit.
+          int pPos = line.indexOf("\"p\":\"");
+          if (pPos >= 0) {
+            int start = pPos + 5;
+            int end = line.indexOf('"', start);
+            if (end > start) {
+              String pval = line.substring(start, end);
+              // NOTE: the index uses full absolute paths (e.g. /Shows/Gravity Falls/Season 1/xxx)
+              if (pval == pathParam || pval.startsWith(pathParam + "/")) {
+                stream->println(line);
+              }
+            }
+          }
+        }
+        line = "";
+      } else {
+        line += c;
+        // Safety: cap absurdly long lines to avoid memory blowups
+        if (line.length() > 4096) {
+          line = "";
+        }
+      }
+    }
+    f.close();
+
+    // Flush last line (no trailing newline case)
+    if (line.length() > 0) {
+      int pPos = line.indexOf("\"p\":\"");
+      if (pPos >= 0) {
+        int start = pPos + 5;
+        int end = line.indexOf('"', start);
+        if (end > start) {
+          String pval = line.substring(start, end);
+          if (pval == pathParam || pval.startsWith(pathParam + "/")) {
+            stream->println(line);
+          }
+        }
+      }
+    }
+
+    request->send(stream);
   });
 
   server.on("/enterUsb", HTTP_POST, [](AsyncWebServerRequest *request){
