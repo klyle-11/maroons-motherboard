@@ -1,17 +1,12 @@
 // Jcorp Nomad Backend
-//<!-- Version 3.4 -->
+//<!-- Version 3.5 -->
 #include <Arduino.h>
-#define FF_USE_FASTSEEK 1
-#define SD_FREQ_KHZ 40000
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include "FS.h"
-#define CONFIG_FATFS_EXFAT 1
-#include <SD_MMC.h>
-#ifndef SD
-#define SD SD_MMC
-#endif
+#include <SdFat.h>
+SdExFat sd;
+ExFatFile file;
 #include <DNSServer.h>
 #include "SD_Card.h"
 #include <ArduinoJson.h>
@@ -969,7 +964,7 @@ bool tryRecoverSDCard() {
     SD_MMC.end();          // unmount
     delay(1000);           // give hardware a breather
 
-    if (!SD_MMC.begin("/sdcard", true, false, SD_FREQ_KHZ, 12)) {
+    if (!SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT, 12)) {
         Serial.println("[SD] Recovery failed.");
         return false;
     }
@@ -1374,9 +1369,9 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
                 filePath.c_str(), request->method(),
                 request->hasHeader("Range") ? request->header("Range").c_str() : "");
 
-  // Take SD mutex before any SD operations
+  // OPTIMIZATION: Reduce mutex timeout from 5000ms to 1000ms
   if (sdMutex) {
-    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
       Serial.printf("[RangeHandler] SD mutex timeout for: %s\n", filePath.c_str());
       request->send(503, "text/plain", "SD busy — retrying shortly");
       return;
@@ -1407,16 +1402,6 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
     releaseSd();
     request->send(503, "text/plain", "SD error — retrying shortly");
     return;
-  if (!file) {
-    Serial.printf("[SD] open() failed for '%s' — trigger recovery\n", filePath.c_str());
-    // ADD THIS LINE HERE:
-    Serial.printf("[DEBUG] SD OPEN FAILED: Setting sdErrorFlag=true, cooldown until %lu\n", millis() + 5000);
-    sdErrorFlag = true;
-    sdErrorCooldownUntil = millis() + 5000;
-    releaseSd();
-    request->send(503, "text/plain", "SD error — retrying shortly");
-    return;
-  }
   }
 
   size_t fileSize = file.size();
@@ -1428,7 +1413,7 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
     AsyncWebServerResponse *headResponse = request->beginResponse(200, "application/octet-stream", "");
     headResponse->addHeader("Accept-Ranges", "bytes");
     headResponse->addHeader("Content-Length", String(fileSize));
-    headResponse->addHeader("Cache-Control", "no-cache");
+    headResponse->addHeader("Cache-Control", "public, max-age=3600");
     headResponse->addHeader("Pragma", "no-cache");
     file.close();
     releaseSd();
@@ -1460,9 +1445,10 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
     }
   }
 
-  if (openEndedRange && (endByte - startByte) > (50 * 1024 * 1024)) {
-    endByte = startByte + (50 * 1024 * 1024) - 1;
-    Serial.printf("[RangeHandler] Capping open-ended range to 50MB: %s-%s\n", 
+  // OPTIMIZATION: Increase initial chunk from 50MB to 100MB for faster buffering
+  if (openEndedRange && (endByte - startByte) > (100 * 1024 * 1024)) {
+    endByte = startByte + (100 * 1024 * 1024) - 1;
+    Serial.printf("[RangeHandler] Capping open-ended range to 100MB: %s-%s\n", 
                   humanSize(startByte).c_str(), humanSize(endByte).c_str());
   }
 
@@ -1496,8 +1482,7 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
   else if (pLower.endsWith(".cbz")) mimeType = "application/vnd.comicbook+zip";
   else if (pLower.endsWith(".cbr")) mimeType = "application/vnd.comicbook-rar";
 
-  // Add weblog for range requests - keep it simple and clean
-  if (contentLength > 2048) { // Only log substantial content requests, not probes
+  if (contentLength > 2048) {
     String fileName = filePath.substring(filePath.lastIndexOf('/') + 1);
     String logMessage = "Playing: " + fileName + " (" + humanSize(fileSize) + ")";
     if (isMediaStream) {
@@ -1525,23 +1510,19 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
       response->addHeader("Access-Control-Allow-Origin", "*");
       response->addHeader("Accept-Ranges", "bytes");
       response->addHeader("Content-Range", "bytes " + String(startByte) + "-" + String(endByte) + "/" + String(fileSize));
-      response->addHeader("Cache-Control", "no-cache");
+      response->addHeader("Cache-Control", "public, max-age=3600");
       request->send(response);
       free(probeBuffer);
       return;
     }
   }
 
-  // Release mutex for streaming response - file handle will manage the rest
   releaseSd();
 
-  // Use original pattern: capture file by value, let ESP32 File handle manage state
-  // The File copy constructor handles the reference properly for SD_MMC
   AsyncWebServerResponse *response = request->beginResponse(
     mimeType,
     contentLength,
     [file, startByte, contentLength](uint8_t *buffer, size_t maxLen, size_t index) mutable -> size_t {
-      // On first call, seek to start position
       if (index == 0) {
         file.seek(startByte);
       }
@@ -1562,7 +1543,6 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
         return 0;
       }
 
-      // Close file when done
       if (index + bytesRead >= contentLength) {
         file.close();
       }
@@ -1577,7 +1557,7 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
   response->addHeader("Accept-Ranges", "bytes");
   response->addHeader("Content-Range", "bytes " + String(startByte) + "-" + String(endByte) + "/" + String(fileSize));
   response->addHeader("Content-Length", String(contentLength));
-  response->addHeader("Cache-Control", "no-cache");
+  response->addHeader("Cache-Control", "public, max-age=3600");
   response->addHeader("Pragma", "no-cache");
   response->setCode(206);
   request->send(response);
