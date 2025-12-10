@@ -387,7 +387,7 @@
         </div>
       </div>
 
-      <audio id="audio" preload="metadata" crossorigin="anonymous" style="display:none"></audio>
+      <audio id="audio" preload="none" crossorigin="anonymous" style="display:none"></audio>
     </div>
   </div>
 
@@ -659,7 +659,6 @@ async function fetchIndex(path){
 
 /* ---------- BUILD MAP & SCAN ---------- */
 async function scanPlaylists(useCacheIfAvailable = true){
-  // quick cached render for perceived speed
   if(useCacheIfAvailable){
     const cached = loadCacheFromLocalStorage();
     if(cached){
@@ -670,32 +669,47 @@ async function scanPlaylists(useCacheIfAvailable = true){
   const newDirMap = new Map();
   
   try{
-    // Fetch the full Music bucket index once
     const resp = await fetchIndex(ROOT);
     if(resp.header && resp.header.sig) lastSig = resp.header.sig;
 
-    // Process all entries - they have full paths
+    // FIRST PASS: Create all directory entries
     for(const e of resp.entries){
       const type = e.t || e.type || (e.kind === 'file' ? 'f' : (e.kind === 'dir' ? 'd' : undefined));
-      
-      // Get the full path from entry
       let fullPath = e.p || e.path;
       if(!fullPath && e.n){
-        // If no full path, construct it
         fullPath = e.n.startsWith('/') ? e.n : normalizePath(ROOT + '/' + e.n);
       }
       if(!fullPath) continue;
-      
       fullPath = normalizePath(fullPath);
+      if(!fullPath.startsWith(ROOT + '/') && fullPath !== ROOT) continue;
       
-      // Only process entries under ROOT
+      if(type === 'd'){
+        if(!newDirMap.has(fullPath)){
+          const name = fullPath.split('/').filter(Boolean).pop() || '/';
+          newDirMap.set(fullPath, { 
+            path: fullPath, 
+            name: name, 
+            files: [], 
+            dirs: new Set() 
+          });
+        }
+      }
+    }
+
+    // SECOND PASS: Add files and link parent-child relationships
+    for(const e of resp.entries){
+      const type = e.t || e.type || (e.kind === 'file' ? 'f' : (e.kind === 'dir' ? 'd' : undefined));
+      let fullPath = e.p || e.path;
+      if(!fullPath && e.n){
+        fullPath = e.n.startsWith('/') ? e.n : normalizePath(ROOT + '/' + e.n);
+      }
+      if(!fullPath) continue;
+      fullPath = normalizePath(fullPath);
       if(!fullPath.startsWith(ROOT + '/') && fullPath !== ROOT) continue;
       
       if(type === 'f' && isAudio(fullPath)){
-        // Add audio file
         addTrackToMap(newDirMap, fullPath);
         
-        // Ensure all parent directories exist
         const parts = fullPath.split('/').filter(Boolean);
         for(let i = 1; i < parts.length; i++){
           const dirPath = '/' + parts.slice(0, i).join('/');
@@ -707,25 +721,10 @@ async function scanPlaylists(useCacheIfAvailable = true){
               dirs: new Set() 
             });
           }
-          if(i > 1){
-            const parentPath = '/' + parts.slice(0, i-1).join('/');
-            const parent = newDirMap.get(parentPath);
-            if(parent) parent.dirs.add(dirPath);
-          }
         }
-      } else if(type === 'd'){
-        // Add directory
-        if(!newDirMap.has(fullPath)){
-          const name = fullPath.split('/').filter(Boolean).pop() || '/';
-          newDirMap.set(fullPath, { 
-            path: fullPath, 
-            name: name, 
-            files: [], 
-            dirs: new Set() 
-          });
-        }
-        
-        // Link to parent
+      }
+      
+      if(type === 'd'){
         const parts = fullPath.split('/').filter(Boolean);
         if(parts.length > 1){
           const parentPath = '/' + parts.slice(0, -1).join('/');
@@ -748,15 +747,16 @@ async function scanPlaylists(useCacheIfAvailable = true){
 
   directoryMap = newDirMap;
 
-  // compute topPlaylists = immediate children of ROOT
   const children = Array.from(directoryMap.values()).filter(d => {
     const parts = d.path.split('/').filter(Boolean);
     return parts.length === 2 && parts[0] === ROOT.replace(/^\//,'');
   }).sort((a,b)=> a.name.localeCompare(b.name, undefined, {numeric:true}));
 
-  topPlaylists = children.map(c => c.path).filter(p => gatherRecursive(p).length > 0);
+  topPlaylists = children.map(c => c.path).filter(p => {
+    const entry = directoryMap.get(p);
+    return entry && (entry.files.length > 0 || entry.dirs.size > 0);
+  });
 
-  // normalize/sort files in each directory for stable ordering
   for(const [k,v] of directoryMap.entries()){
     if(v.files && v.files.length){
       v.files.sort((a,b)=> sortAsc ? a.name.localeCompare(b.name, undefined, {numeric:true}) : b.name.localeCompare(a.name, undefined, {numeric:true}));
@@ -1157,13 +1157,16 @@ function playAtIndex(i){
     _setPlayButtonLoading(true);
     audio.pause();
     audio.src = apiFileUrl(item.path);
-    try { audio.load(); } catch(e){}
-    const p = audio.play();
-    if(p && typeof p.then === 'function'){
-      p.then(()=> _setPlayButtonLoading(false)).catch(()=>{/* waiting for events */});
-    } else {
-      _setPlayButtonLoading(false);
-    }
+    
+    audio.addEventListener('canplay', () => {
+      audio.play().then(() => {
+        _setPlayButtonLoading(false);
+      }).catch(() => {
+        _setPlayButtonLoading(false);
+      });
+    }, { once: true });
+    
+    audio.load();
   } catch(e){
     console.warn('playAtIndex error', e);
     _setPlayButtonLoading(false);
