@@ -1,4 +1,4 @@
-// <!-- Version 2.2 -->
+// <!-- Version 2.3 -->
 // Fetch SD card information
 async function fetchSD() {
   try {
@@ -13,7 +13,21 @@ async function fetchSD() {
     console.error('Failed to fetch SD info:', e);
   }
 }
-
+async function triggerSDScan() {
+  try {
+    const res = await fetch('/api/sd-scan', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) {
+      alert('SD scan started. Check console for progress. Do not use the device during this process.');
+      setTimeout(fetchSD, 5000);
+    } else {
+      alert('Failed to start SD scan');
+    }
+  } catch (e) {
+    console.error('SD scan error:', e);
+    alert('Error starting SD scan');
+  }
+}
 // Theme management
 const THEME_KEY = 'nomad_dark_mode';
 
