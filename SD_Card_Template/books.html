@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Version 2.3 -->
+<!-- Version 2.4 -->
 <html lang="en">
 <head>
     <meta charset="utf-8" />
@@ -8,7 +8,7 @@
     <!-- Books page now has super minimal support for epub, audiobook, and CBZ formats. these are not fleshed out yet, but here -->
     <!-- AudioBooks: Basic resume functionality, but still fairly buggy -->
     <!-- Epub: All kinds of formating issues, probably going to get its own reader page -->
-    <!-- CBZ: Basicly Useless despite many hrs of effort, it will load webtoon style comics, but needs to load the full file into cache before unziping... I should be able to fix this to serve as 206 partial, buts its not working yet -->
+    <!-- CBZ: You must first unzip the cbz (you can literaly rename it to zip and open it or use an online tool. put the resulting folder in and it should be picked up as a comic -->
     <!-- assets -->
     <script src="/assets/unzipit.min.js"></script>
     <script src="/assets/jszip.min.js"></script>
@@ -271,7 +271,16 @@
         }
 
         .media-grid.large .media-card {
-            max-width: 220px;
+           max-width: 220px;
+        }
+        
+        .media-card.is-directory .thumb-wrapper {
+            border: 3px solid var(--primary);
+            box-sizing: border-box;
+        }
+
+        body.dark .media-card.is-directory .thumb-wrapper {
+            border-color: #4a9eff;
         }
 
         .media-card:hover {
@@ -351,6 +360,21 @@
             box-shadow: 0 6px 20px rgba(0,0,0,0.1);
             overflow: hidden;
         }
+
+            .list-modal-content .list {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+                gap: 12px;
+                padding: 12px;
+                max-height: 70vh;
+                overflow-y: auto;
+                text-align: center;
+            }
+
+            .list-modal-content .list .media-card {
+                max-width: 100%;
+                margin: 0;
+            }
 
             .modal-content h2, .list-modal-content h2 {
                 margin: 0 0 10px 0
@@ -1291,12 +1315,15 @@
 
             const rootImages = new Map();
             for (const e of rootResp.entries) {
+                if (e.n && e.n.includes('/')) continue;
                 if (e.t === 'f' && isImageName(e.n)) {
                     rootImages.set(e.n.replace(/\.[^/.]+$/, '').toLowerCase(), normalizePath((ROOT === '/' ? '' : ROOT) + '/' + e.n));
                 }
             }
 
             for (const e of rootResp.entries) {
+                if (e.n && e.n.includes('/')) continue;
+                
                 if (e.t === 'd') {
                     const seriesName = e.n;
                     const dir = normalizePath((ROOT === '/' ? '' : ROOT) + '/' + seriesName);
@@ -1308,7 +1335,9 @@
                     ];
                     for (const v of variants) { if (rootImages.has(v)) { cover = rootImages.get(v); break; } }
                     if (!cover) ['poster', 'cover', 'folder', 'art'].forEach(k => { if (!cover && rootImages.has(k)) cover = rootImages.get(k); });
-                    out.push({ name: seriesName.replace(/[_\.]+/g, ' ').trim(), dir, cover, type: 'dir' });
+                    
+                    const isComic = e.comic === true;
+                    out.push({ name: seriesName.replace(/[_\.]+/g, ' ').trim(), dir, cover, type: 'dir', isComic });
 
                 } else if (e.t === 'f') {
                     if (isBookName(e.n) || isAudioName(e.n) || isComicName(e.n)) {
@@ -1317,32 +1346,59 @@
                         const cover = rootImages.has(base) ? rootImages.get(base) : null;
                         out.push({ name: prettify(e.n), dir: null, cover, type: 'file', fileEntry: { name: e.n, path: p, sz: e.sz || 0, mt: e.mt || 0 } });
                     }
-                } else {
-                    if (e.n && e.n.includes('/') && (isBookName(e.n) || isAudioName(e.n) || isComicName(e.n))) {
-                        const top = e.n.split('/')[0];
-                        const dir = normalizePath((ROOT === '/' ? '' : ROOT) + '/' + top);
-                        if (!out.some(x => x.type === 'dir' && x.dir === dir)) {
-                            out.push({ name: top.replace(/[_\.]+/g, ' ').trim(), dir, cover: null, type: 'dir' });
-                        }
-                    }
                 }
             }
 
             out.sort((a, b) => a.name.localeCompare(b.name));
             return out;
         }
-
         async function loadDirContents(dir) {
             try {
                 const resp = await fetchIndex(dir);
                 const files = [];
+                const images = new Map();
+                
+                const normalizedDir = normalizePath(dir);
+                
                 for (const e of resp.entries) {
+                    if (!e.p || !e.n) continue;
+                    
+                    const entryPath = normalizePath(e.p);
+                    
+                    if (entryPath === normalizedDir) continue;
+                    
+                    if (!entryPath.startsWith(normalizedDir + '/')) continue;
+                    
+                    const relativePath = entryPath.substring(normalizedDir.length + 1);
+                    if (relativePath.includes('/')) continue;
+                    
+                    if (e.t === 'f' && isImageName(e.n)) {
+                        const base = e.n.replace(/\.[^/.]+$/, '').toLowerCase();
+                        images.set(base, entryPath);
+                    }
+                }
+                
+                for (const e of resp.entries) {
+                    if (!e.p || !e.n) continue;
+                    
+                    const entryPath = normalizePath(e.p);
+                    
+                    if (entryPath === normalizedDir) continue;
+                    
+                    if (!entryPath.startsWith(normalizedDir + '/')) continue;
+                    
+                    const relativePath = entryPath.substring(normalizedDir.length + 1);
+                    if (relativePath.includes('/')) continue;
+                    
                     if (e.t === 'f' && (isBookName(e.n) || isAudioName(e.n) || isComicName(e.n))) {
-                        files.push({ name: prettify(e.n), path: normalizePath(dir + '/' + e.n), sz: e.sz || 0, mt: e.mt || 0 });
+                        const base = e.n.replace(/\.[^/.]+$/, '').toLowerCase();
+                        const cover = images.has(base) ? images.get(base) : null;
+                        files.push({ name: prettify(e.n), path: entryPath, sz: e.sz || 0, mt: e.mt || 0, cover });
                     } else if (e.t === 'd') {
-                        files.push({ name: e.n, path: normalizePath(dir + '/' + e.n), isDir: true });
-                    } else if (e.n && e.n.includes('/') && (isBookName(e.n) || isAudioName(e.n) || isComicName(e.n))) {
-                        files.push({ name: prettify(e.n.split('/').pop()), path: normalizePath(dir + '/' + e.n), sz: e.sz || 0, mt: e.mt || 0 });
+                        const isComic = e.comic === true;
+                        const base = e.n.toLowerCase();
+                        const cover = images.has(base) ? images.get(base) : null;
+                        files.push({ name: e.n, path: entryPath, isDir: true, isComic, cover });
                     }
                 }
                 files.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
@@ -1352,7 +1408,6 @@
                 return { header: null, files: [] };
             }
         }
-
         /* View controls */
         function setViewSize(size) {
             currentSize = size;
@@ -1376,6 +1431,9 @@
             filtered.forEach((item, idx) => {
                 const card = document.createElement('div');
                 card.className = 'media-card';
+                if (item.type === 'dir') {
+                    card.classList.add('is-directory');
+                }
                 card.setAttribute('role', 'listitem');
                 card.setAttribute('aria-label', item.name || '');
                 const pathVal = item.type === 'file' ? (item.fileEntry?.path || '') : (item.dir || '');
@@ -1402,8 +1460,15 @@
                 }
 
                 card.addEventListener('click', async () => {
-                    if (item.type === 'dir') await openListModal(item);
-                    else openActionModal(item.fileEntry);
+                    if (item.type === 'dir') {
+                        if (item.isComic) {
+                            window.location.href = `/comics.html?path=${encodeURIComponent(item.dir)}`;
+                        } else {
+                            await openListModal(item);
+                        }
+                    } else {
+                        openActionModal(item.fileEntry);
+                    }
                 });
 
                 if (shouldAnimate) {
@@ -1443,102 +1508,68 @@
                 return;
             }
 
+            listContainer.innerHTML = '';
+            listContainer.style.maxHeight = '70vh';
+            listContainer.style.overflowY = 'auto';
+            listContainer.style.display = 'grid';
+            listContainer.style.gridTemplateColumns = 'repeat(auto-fill, minmax(120px, 1fr))';
+            listContainer.style.gap = '12px';
+            listContainer.style.padding = '12px';
+
             const frag = document.createDocumentFragment();
-            const first = files.find(f => !f.isDir) || files[0];
-            if (first) {
-                const topBtn = document.createElement('button');
-                topBtn.className = 'btn';
-                topBtn.style.width = '100%';
-                topBtn.style.marginBottom = '8px';
-                topBtn.textContent = first.name;
-                topBtn.onclick = () => {
-                    listModal.style.display = 'none';
-                    if (first.isDir) openListModal({ name: first.name, dir: first.path });
-                    else openActionModal({ name: first.name, path: first.path, sz: first.sz, mt: first.mt });
-                };
-                frag.appendChild(topBtn);
-            }
 
             for (const f of files) {
-                const row = document.createElement('div'); row.className = 'item';
-                const title = document.createElement('div'); title.className = 'title';
-                title.innerHTML = `<div style="font-weight:700">${escapeHtml(f.name)}</div><div class="meta">${f.isDir ? 'Folder' : ''}</div>`;
-
-                const buttons = document.createElement('div'); buttons.className = 'row-buttons';
+                const card = document.createElement('div');
+                card.className = 'media-card';
+                card.style.maxWidth = '100%';
+                card.style.margin = '0';
+                
                 if (f.isDir) {
-                    const openBtn = document.createElement('button');
-                    openBtn.textContent = 'Open';
-                    openBtn.className = 'btn small';
-                    openBtn.onclick = () => { listModal.style.display = 'none'; openListModal({ name: f.name, dir: f.path }); };
-                    buttons.appendChild(openBtn);
-                } else {
-                    const fext = ext(f.path).toLowerCase();
-                    if (fext === '.pdf') {
-                        const openBtn = document.createElement('button');
-                        openBtn.textContent = 'Open';
-                        openBtn.className = 'btn small';
-                        openBtn.onclick = () => { listModal.style.display = 'none'; window.open(fileUrlDirect(f.path), '_blank'); };
-                        buttons.appendChild(openBtn);
-
-                        const dlBtn = document.createElement('button');
-                        dlBtn.textContent = 'Download';
-                        dlBtn.className = 'btn-muted small';
-                        dlBtn.onclick = () => { downloadFile(f.path, f.name); };
-                        buttons.appendChild(dlBtn);
-
-                    } else if (fext === '.epub') {
-                        const openBtn = document.createElement('button');
-                        openBtn.textContent = 'Read';
-                        openBtn.className = 'btn small';
-                        openBtn.onclick = () => { listModal.style.display = 'none'; openEpubReader({ name: f.name, path: f.path, sz: f.sz, mt: f.mt }); };
-                        buttons.appendChild(openBtn);
-
-                        const dlBtn = document.createElement('button');
-                        dlBtn.textContent = 'Download';
-                        dlBtn.className = 'btn-muted small';
-                        dlBtn.onclick = () => { downloadFile(f.path, f.name); };
-                        buttons.appendChild(dlBtn);
-
-                    } else if (isComicName(f.path)) {
-                        const openBtn = document.createElement('button');
-                        openBtn.textContent = 'Read';
-                        openBtn.className = 'btn small';
-                        openBtn.onclick = () => { listModal.style.display = 'none'; openComicReader({ name: f.name, path: f.path, sz: f.sz, mt: f.mt }); };
-                        buttons.appendChild(openBtn);
-
-                        const dlBtn = document.createElement('button');
-                        dlBtn.textContent = 'Download';
-                        dlBtn.className = 'btn-muted small';
-                        dlBtn.onclick = () => { downloadFile(f.path, f.name); };
-                        buttons.appendChild(dlBtn);
-
-                    } else if (isAudioName(f.path)) {
-                        const openBtn = document.createElement('button');
-                        openBtn.textContent = 'Listen';
-                        openBtn.className = 'btn small';
-                        openBtn.onclick = () => { listModal.style.display = 'none'; openAudioPlayer({ name: f.name, path: f.path, sz: f.sz, mt: f.mt }); };
-                        buttons.appendChild(openBtn);
-
-                        const dlBtn = document.createElement('button');
-                        dlBtn.textContent = 'Download';
-                        dlBtn.className = 'btn-muted small';
-                        dlBtn.onclick = () => { downloadFile(f.path, f.name); };
-                        buttons.appendChild(dlBtn);
-
-                    } else {
-                        const dlBtn = document.createElement('button');
-                        dlBtn.textContent = 'Download';
-                        dlBtn.className = 'btn small';
-                        dlBtn.onclick = () => { downloadFile(f.path, f.name); };
-                        buttons.appendChild(dlBtn);
-                    }
+                    card.classList.add('is-directory');
                 }
 
-                row.appendChild(title); row.appendChild(buttons);
-                frag.appendChild(row);
+                const coverPath = f.cover || '';
+                const imgHTML = coverPath ? `<img class="media-thumb" loading="lazy" src="${coverPath}" alt="${escapeHtml(f.name)}">` : '';
+
+                card.innerHTML = `
+                <div class="thumb-wrapper" aria-hidden="false">
+                    <span class="fallback-text">${escapeHtml(f.name)}</span>
+                    ${imgHTML}
+                </div>
+                `;
+
+                const img = card.querySelector('img');
+                const fallback = card.querySelector('.fallback-text');
+                if (img && coverPath) {
+                    img.addEventListener('load', () => { 
+                        img.style.opacity = '1'; 
+                        if (fallback) fallback.style.display = 'none'; 
+                    });
+                    img.addEventListener('error', () => { 
+                        img.style.display = 'none'; 
+                        if (fallback) fallback.style.display = 'block'; 
+                    });
+                    img.src = coverPath;
+                } else {
+                    if (fallback) fallback.style.display = 'block';
+                }
+
+                card.addEventListener('click', () => {
+                    listModal.style.display = 'none';
+                    if (f.isDir) {
+                        if (f.isComic) {
+                            window.location.href = `/comics.html?path=${encodeURIComponent(f.path)}`;
+                        } else {
+                            openListModal({ name: f.name, dir: f.path });
+                        }
+                    } else {
+                        openActionModal({ name: f.name, path: f.path, sz: f.sz, mt: f.mt });
+                    }
+                });
+
+                frag.appendChild(card);
             }
 
-            listContainer.innerHTML = '';
             listContainer.appendChild(frag);
         }
         function closeListModal() { listModal.style.display = 'none'; }
