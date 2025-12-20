@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Version 2.2 -->
+<!-- Version 2.3 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -611,6 +611,9 @@
       <!-- SD Card Usage -->
       <div class="card">
         <h2>SD Card Usage</h2>
+        <div class="alert alert-warning" style="background: var(--warning); color: #212529; padding: 0.75rem; border-radius: 0.375rem; margin-bottom: 1rem; font-size: 0.875rem;">
+          ⚠️ <strong>Warning:</strong> Do not use the device during SD scans (indexing or storage usage). These are heavy processes and may cause the device to crash if interrupted.
+        </div>
         <div class="form-group">
           <div id="sd-used">Used: -- GB</div>
           <div id="sd-total">Total: -- GB</div>
@@ -619,6 +622,7 @@
           </div>
           <div id="sd-percent" style="text-align: center; font-weight: 600; font-size: 1.5rem; margin-top: 0.5rem;">--%</div>
         </div>
+        <button onclick="triggerSDScan()" class="btn btn-info" style="width: 100%; margin-top: 1rem;">Scan SD Usage</button>
       </div>
 
       <!-- RGB Settings -->
@@ -681,6 +685,9 @@
       <!-- Library Index -->
       <div class="card">
         <h2>Library Index</h2>
+        <div class="alert alert-warning" style="background: var(--warning); color: #212529; padding: 0.75rem; border-radius: 0.375rem; margin-bottom: 1rem; font-size: 0.875rem;">
+          ⚠️ <strong>Warning:</strong> Do not use the device during SD scans (indexing or storage usage). These are heavy processes and may cause the device to crash if interrupted.
+        </div>
         <div style="display: flex; flex-direction: column; gap: 1rem;">
           <button onclick="generateMediaJson()" class="btn btn-primary">Full Scan Now</button>
           <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -693,7 +700,6 @@
           <div id="generate-msg" style="font-size: 0.875rem; color: var(--muted);"></div>
         </div>
       </div>
-    </div>
 
     <!-- Full Width Sections -->
     <div class="grid-full">
