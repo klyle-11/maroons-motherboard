@@ -1,10 +1,13 @@
-<!DOCTYPE html>
-<!-- Version 2.1 -->
+
+<!-- Version 2.8 -->
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
+
 <title>Nomad • Movies</title>
+<link rel="stylesheet" href="assets/plyr.css" />
+<script src="assets/plyr.min.js"></script>
 
 <style>
   :root{
@@ -152,11 +155,36 @@
     .video-container { width:100%; display:flex;flex-direction:column;align-items:center;gap:8px; }
     .video-container video {
       width:100%;
-      max-height:75vh;
       border-radius:10px;
-      background:#000;
-      box-shadow:0 8px 26px rgba(0,0,0,0.12);
-      outline:1px solid rgba(0,0,0,0.04);
+    }
+    .plyr {
+      --plyr-color-main: #007bff;
+      --plyr-video-controls-background: rgba(0, 0, 0, 0.7);
+      border-radius: 10px;
+      width: 100%;
+    }
+    .plyr__video-wrapper {
+      width: 100%;
+    }
+    .plyr--fullscreen {
+      background: #000;
+    }
+    .plyr--fullscreen video {
+      max-height: 100% !important;
+      max-width: 100% !important;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    @media (max-width: 768px) {
+      .plyr__volume {
+        display: none !important;
+      }
+    }
+    body.dark .plyr {
+      --plyr-video-background: #000;
+      --plyr-menu-background: rgba(0, 0, 0, 0.9);
+      --plyr-menu-color: #fff;
     }
     .video-modal-content .close-btn {
       padding:10px 14px;
@@ -675,19 +703,7 @@ const videoPlayer = document.getElementById('videoPlayer');
 const videoTitle = document.getElementById('videoTitle');
 
 /* ---------- keep device awake while playing ---------- */
-/* Attach listeners so we request a wake lock on play and release on pause/ended */
-videoPlayer.addEventListener('playing', () => {
-  // request wake lock after a user gesture starts playback
-  requestWakeLock().catch(()=>{});
-});
-videoPlayer.addEventListener('pause', () => {
-  // release when paused
-  releaseWakeLock().catch(()=>{});
-});
-videoPlayer.addEventListener('ended', () => {
-  // release on ended (also handled by pause in some UAs)
-  releaseWakeLock().catch(()=>{});
-});
+/* Wake lock is now handled by Plyr event listeners in openVideo function */
 
 /* Continue with existing functions */
 function showMovieOptions(movie){
@@ -858,62 +874,275 @@ function startStallWatcher(player, src){
 function openVideo(src, useResume=false){
   clearTimeout(stallTimer);
   stallRetries = 0;
-  videoPlayer.pause();
-  videoPlayer.removeAttribute('src');
-  videoPlayer.load();
-  videoModal.style.display = 'flex';
-  videoPlayer.src = src;
-  videoPlayer.preload = 'auto';
-  videoTitle.textContent = currentMovie ? currentMovie.name : '';
 
   const saved = findResume(currentMovie || { path: '' });
-  let playAttempted = false;
-
-  function attemptPlay(){
-    if(playAttempted) return;
-    playAttempted = true;
-    
-    if(useResume && saved && saved.entry && saved.entry.position > 1){
-      videoPlayer.currentTime = saved.entry.position;
-    }
-    startAutosave();
-    videoPlayer.play().catch(e => console.warn('Play failed:', e));
+  let startTime = 0;
+  if(useResume && saved && saved.entry && saved.entry.position > 1){
+    startTime = saved.entry.position;
   }
 
-  videoPlayer.addEventListener('loadedmetadata', () => {
-    console.log('Metadata loaded');
-    attemptPlay();
+  videoPlayer.pause();
+  videoPlayer.innerHTML = '';
+
+  const source = document.createElement('source');
+  source.src = src;
+  source.type = 'video/mp4';
+  videoPlayer.appendChild(source);
+
+  if(currentMovie && currentMovie.subtitles && currentMovie.subtitles.length > 0){
+    const subtitleUrl = fileUrl(currentMovie.subtitles[0].path);
+    const track = document.createElement('track');
+    track.kind = 'subtitles';
+    track.label = 'English';
+    track.srclang = 'en';
+    track.src = subtitleUrl;
+    track.default = true;
+    videoPlayer.appendChild(track);
+  }
+
+  if (!window.plyrInstance) {
+    window.plyrInstance = new Plyr(videoPlayer, {
+      controls: [
+        'play-large',
+        'play',
+        'progress',
+        'current-time',
+        'duration',
+        'mute',
+        'volume',
+        'captions',
+        'settings',
+        'pip',
+        'airplay',
+        'fullscreen'
+      ],
+      settings: ['captions', 'speed'],
+      fullscreen: { enabled: true, fallback: true, iosNative: false },
+      clickToPlay: false,
+      hideControls: true,
+      resetOnEnd: false,
+      keyboard: { focused: true, global: true },
+      tooltips: { controls: true, seek: true }
+    });
+
+    try {
+      const allImages = document.querySelectorAll('img[loading="lazy"]');
+      allImages.forEach(img => {
+        if (img.src && !img.complete) {
+          img.dataset.originalSrc = img.src;
+          img.removeAttribute('src');
+        }
+      });
+      console.log('Paused lazy image loading for video playback');
+    } catch(e) {
+      console.warn('Could not pause image loading', e);
+    }
+
+    window.plyrInstance.on('pause', () => {
+      saveNow();
+      releaseWakeLock().catch(()=>{});
+    });
+    window.plyrInstance.on('play', () => {
+      requestWakeLock().catch(()=>{});
+    });
+    window.plyrInstance.on('ended', () => {
+      clearResumeFor(currentMovie.path);
+      stopAutosave();
+      releaseWakeLock().catch(()=>{});
+      renderGrid();
+    });
+    window.plyrInstance.on('seeked', () => {
+      saveNow();
+    });
+
+    window.plyrInstance.on('loadedmetadata', () => {
+      console.log('Video metadata loaded:', videoPlayer.videoWidth, 'x', videoPlayer.videoHeight);
+
+      if (document.querySelector('.plyr--fullscreen')) {
+        requestAnimationFrame(() => {
+          const plyrContainer = document.querySelector('.plyr--fullscreen');
+          const wrapper = document.querySelector('.plyr--fullscreen .plyr__video-wrapper');
+          const video = videoPlayer;
+
+          if (plyrContainer) {
+            plyrContainer.style.width = '100vw';
+            plyrContainer.style.height = '100vh';
+            plyrContainer.style.display = 'flex';
+            plyrContainer.style.alignItems = 'center';
+            plyrContainer.style.justifyContent = 'center';
+          }
+
+          if (wrapper) {
+            wrapper.style.width = '100%';
+            wrapper.style.height = '100%';
+            wrapper.style.display = 'flex';
+            wrapper.style.alignItems = 'center';
+            wrapper.style.justifyContent = 'center';
+          }
+
+          if (video) {
+            video.style.width = '100%';
+            video.style.height = '100%';
+            video.style.maxWidth = '100vw';
+            video.style.maxHeight = '100vh';
+            video.style.objectFit = 'contain';
+          }
+
+          console.log('Reapplied fullscreen sizing after metadata load');
+        });
+      }
+    });
+
+    window.plyrInstance.on('enterfullscreen', async () => {
+      console.log('Entered fullscreen');
+
+      const enforceFullscreenSizing = () => {
+        const plyrContainer = document.querySelector('.plyr--fullscreen');
+        const wrapper = document.querySelector('.plyr--fullscreen .plyr__video-wrapper');
+        const video = videoPlayer;
+
+        if (plyrContainer) {
+          plyrContainer.style.cssText = 'width: 100vw !important; height: 100vh !important; display: flex !important; align-items: center !important; justify-content: center !important; background: #000 !important; padding: 0 !important;';
+        }
+
+        if (wrapper) {
+          wrapper.style.cssText = 'width: 100% !important; height: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; position: relative !important; padding-bottom: 0 !important; padding: 0 !important;';
+        }
+
+        if (video) {
+          video.style.cssText = 'width: 100% !important; height: 100% !important; max-width: 100vw !important; max-height: 100vh !important; object-fit: contain !important; position: relative !important;';
+        }
+      };
+
+      // Apply immediately and aggressively
+      enforceFullscreenSizing();
+      setTimeout(enforceFullscreenSizing, 50);
+      setTimeout(enforceFullscreenSizing, 100);
+      setTimeout(enforceFullscreenSizing, 200);
+
+      // Keep enforcing every 100ms while in fullscreen
+      const enforcerInterval = setInterval(() => {
+        if (!document.querySelector('.plyr--fullscreen')) {
+          clearInterval(enforcerInterval);
+        } else {
+          enforceFullscreenSizing();
+        }
+      }, 100);
+
+      try {
+        if (screen.orientation && screen.orientation.lock) {
+          await screen.orientation.lock('landscape').catch(e => console.log('Orientation lock not supported:', e));
+        }
+      } catch(e) {
+        console.log('Could not lock orientation:', e);
+      }
+    });
+
+    window.plyrInstance.on('exitfullscreen', () => {
+      try {
+        if (screen.orientation && screen.orientation.unlock) {
+          screen.orientation.unlock();
+        }
+      } catch(e) {
+        console.log('Could not unlock orientation:', e);
+      }
+    });
+
+    setTimeout(() => {
+      const plyrWrapper = document.querySelector('.plyr__video-wrapper');
+      if (plyrWrapper) {
+        let lastTap = 0;
+        let tapTimeout = null;
+
+        plyrWrapper.addEventListener('touchend', (e) => {
+          const currentTime = Date.now();
+          const tapLength = currentTime - lastTap;
+
+          if (tapLength < 300 && tapLength > 0) {
+            clearTimeout(tapTimeout);
+            e.preventDefault();
+            e.stopPropagation();
+
+            const rect = plyrWrapper.getBoundingClientRect();
+            const touchX = e.changedTouches[0].clientX - rect.left;
+            const width = rect.width;
+
+            if (touchX < width / 3) {
+              window.plyrInstance.rewind(10);
+              console.log('Rewind 10s');
+            } else if (touchX > (2 * width) / 3) {
+              window.plyrInstance.forward(10);
+              console.log('Forward 10s');
+            }
+            lastTap = 0;
+          } else {
+            lastTap = currentTime;
+            tapTimeout = setTimeout(() => {
+              lastTap = 0;
+              if (window.plyrInstance && document.querySelector('.plyr--hide-controls') === null) {
+                const controlsDiv = document.querySelector('.plyr__controls');
+                if (controlsDiv && getComputedStyle(controlsDiv).opacity !== '0') {
+                  const video = document.querySelector('.plyr video');
+                  if (video) video.click();
+                }
+              }
+            }, 300);
+          }
+        });
+      }
+    }, 500);
+  } else {
+    const subtitles = [];
+    if(currentMovie && currentMovie.subtitles && currentMovie.subtitles.length > 0){
+      const subtitleUrl = fileUrl(currentMovie.subtitles[0].path);
+      subtitles.push({ kind: 'captions', label: 'English', srclang: 'en', src: subtitleUrl, default: true });
+    }
+    window.plyrInstance.source = {
+      type: 'video',
+      sources: [{ src: src, type: 'video/mp4' }],
+      tracks: subtitles
+    };
+  }
+
+  videoModal.style.display = 'flex';
+  videoTitle.textContent = currentMovie ? currentMovie.name : '';
+
+  videoPlayer.addEventListener('loadedmetadata', function onMetadata() {
+    console.log('Video metadata loaded:', videoPlayer.videoWidth, 'x', videoPlayer.videoHeight);
+    videoPlayer.removeEventListener('loadedmetadata', onMetadata);
   }, { once: true });
 
-  videoPlayer.addEventListener('canplay', () => {
-    console.log('Can play');
-    attemptPlay();
-  }, { once: true });
+  if (startTime > 0) {
+    window.plyrInstance.once('canplay', () => {
+      window.plyrInstance.currentTime = startTime;
+      console.log('Resume position set to:', startTime);
+    });
+  }
 
-  setTimeout(() => {
-    console.log('Timeout fallback - forcing play');
-    attemptPlay();
-  }, 1000);
-
-  videoPlayer.addEventListener('pause', saveNow);
-  videoPlayer.addEventListener('seeked', saveNow);
-  videoPlayer.addEventListener('ended', () => {
-    clearResumeFor(currentMovie.path);
-    stopAutosave();
-    renderGrid();
-  });
-  
-  startStallWatcher(videoPlayer, src);
+  startAutosave();
+  window.plyrInstance.play().catch(e => console.warn('Play failed:', e));
 }
 function closeVideo(){
   try{ saveNow(); }catch(e){}
-  videoPlayer.pause();
-  videoPlayer.removeAttribute('src');
-  videoPlayer.load();
+  if (window.plyrInstance) {
+    window.plyrInstance.pause();
+  }
   videoModal.style.display = 'none';
   stopAutosave();
-  // ensure wake lock released when closing the player
   releaseWakeLock().catch(()=>{});
+
+  try {
+    const allImages = document.querySelectorAll('img[loading="lazy"]');
+    allImages.forEach(img => {
+      if (img.dataset.originalSrc) {
+        img.src = img.dataset.originalSrc;
+        delete img.dataset.originalSrc;
+      }
+    });
+    console.log('Resumed lazy image loading');
+  } catch(e) {
+    console.warn('Could not resume image loading', e);
+  }
 }
 
 /* autosave every 4s */
@@ -922,15 +1151,15 @@ function stopAutosave(){ if(autosaveTimer){ clearInterval(autosaveTimer); autosa
 function saveNow(){
   try {
     if(!currentMovie) return;
-    const cur = Math.floor(videoPlayer.currentTime || 0);
-    const dur = Math.floor(videoPlayer.duration || 0);
+    if(!window.plyrInstance) return;
+    const cur = Math.floor(window.plyrInstance.currentTime || 0);
+    const dur = Math.floor(window.plyrInstance.duration || 0);
     if(!isFinite(cur)) return;
     if(cur > 0 && dur > 0){
       const store = readResume();
       const key = fileKey(currentMovie.path, currentMovie.sz || 0, currentMovie.mt || 0);
       store[key] = { position: cur, duration: dur, updated: Date.now() };
       writeResume(store);
-      // only update the badge for the current movie to avoid re-rendering the whole grid (stops flashing)
       try { updateResumeBadge(currentMovie, cur); } catch(e){ /* noop */ }
     }
   } catch(e){ console.warn('saveNow failed', e); }
