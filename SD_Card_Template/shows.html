@@ -5,6 +5,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Nomad • Shows</title>
+<link rel="stylesheet" href="assets/plyr.css" />
+<script src="assets/plyr.min.js"></script>
 <style>
   :root{
     --primary:#007bff; --primary-dark:#0056b3; --bg:#f4f4f9; --text:#333; --muted:#6b7280;
@@ -90,21 +92,32 @@
   .season-content{padding-left:6px;padding-right:6px;margin-bottom:6px}
 
   .video-container{display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;padding:6px;box-sizing:border-box}
-  /* Video sizing: limit height so modal won't expand, allow width to be up to container but keep aspect ratio via height auto */
-  .video-container video{ width:100%; height:auto; max-height: calc(80vh - 140px); object-fit:contain; border-radius:8px; background:#000; display:block; }
+  .video-container video{ width:100%; object-fit:contain; display:block; }
+  .plyr {
+    --plyr-color-main: #007bff;
+    --plyr-video-controls-background: rgba(0, 0, 0, 0.7);
+    border-radius: 8px;
+    width: 100%;
+  }
+  .plyr__video-wrapper {
+    width: 100%;
+  }
+  .plyr--fullscreen {
+    background: #000;
+  }
+  .plyr--fullscreen video {
+    max-height: 100% !important;
+    max-width: 100% !important;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+  @media (max-width: 768px) {
+    .plyr__volume {
+      display: none !important;
+    }
+  }
   .video-title{font-weight:700;color:#fff;margin-bottom:6px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%}
-  .video-actions{display:flex;gap:8px;width:100%;max-width:420px;margin-top:8px}
-  .video-actions button{flex:1;padding:10px;border-radius:8px;border:0;cursor:pointer}
-  .video-actions .cancel{background:#fff;border:1px solid #e6e9ef;color:#333}
-  .video-actions #videoNextBtn{background:var(--primary);color:#fff}
-
-
-/* marquee keyframes */
-@keyframes scroll { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
-
-/* entrance animation */
-.media-card.play-anim { animation-name:cardIn; animation-duration:360ms; animation-timing-function:cubic-bezier(.2,.9,.2,1); animation-fill-mode:both; }
-@keyframes cardIn { from { opacity:0; transform:translateX(-18px) scale(.994); } to { opacity:1; transform:translateX(0) scale(1); } }
 </style>
 </head>
 <body>
@@ -377,6 +390,40 @@ let currentEpisode = null;
 let currentEpisodeIndex = -1;
 let autosaveTimer = null;
 let rootSig = null;
+
+/* ---------- Screen wake lock / NoSleep fallback ---------- */
+let wakeLock = null;
+let noSleep = null;
+
+async function requestWakeLock(){
+  try {
+    if ('wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => {
+        console.log('Wake Lock released');
+      });
+      console.log('Wake Lock active');
+    } else if (typeof NoSleep !== 'undefined') {
+      if (!noSleep) noSleep = new NoSleep();
+      noSleep.enable();
+      console.log('NoSleep enabled');
+    }
+  } catch(e) {
+    console.warn('requestWakeLock error', e);
+  }
+}
+
+async function releaseWakeLock(){
+  try {
+    if (wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+    if (noSleep) noSleep.disable();
+  } catch(e) {
+    console.warn('releaseWakeLock error', e);
+  }
+}
 
 /* Helpers */
 function normalizePath(p){ if(!p) return '/'; p = String(p); if(!p.startsWith('/')) p='/' + p; while(p.length>1 && p.endsWith('/')) p=p.slice(0,-1); return p; }
@@ -920,12 +967,25 @@ actionCloseBtn.addEventListener('click', closeActionModal);
 /* closeVideo optionally avoids autosave (used when marking completed to avoid overwriting) */
 function closeVideo(doSave=true){
   try{ if(doSave) saveNow(); }catch(e){}
-  detachVideoListeners();
-  videoPlayer.pause();
-  videoPlayer.removeAttribute('src');
-  videoPlayer.load();
+  if (window.plyrInstance) {
+    window.plyrInstance.pause();
+  }
   videoModal.style.display='none';
   stopAutosave();
+  releaseWakeLock().catch(()=>{});
+
+  try {
+    const allImages = document.querySelectorAll('img[loading="lazy"]');
+    allImages.forEach(img => {
+      if (img.dataset.originalSrc) {
+        img.src = img.dataset.originalSrc;
+        delete img.dataset.originalSrc;
+      }
+    });
+    console.log('Resumed lazy image loading');
+  } catch(e) {
+    console.warn('Could not resume image loading', e);
+  }
 }
 videoModal.addEventListener('click', (e)=>{ if(e.target===videoModal) closeVideo(); });
 videoCloseBtn.addEventListener('click', ()=> closeVideo(true));
@@ -1286,70 +1346,173 @@ function openVideo(src, useResume=false, ep=null){
 
   console.debug('[Shows] openVideo', { path: currentEpisode.path, index: currentEpisodeIndex });
 
-  detachVideoListeners();
-  videoPlayer.pause();
-  videoPlayer.removeAttribute('src');
-  videoPlayer.load();
-
-  const darkNow = document.body.classList.contains('dark');
-  const videoModalContent = document.querySelector('.video-modal-content');
-  if(videoModalContent) videoModalContent.style.background = darkNow ? '#111' : '#fff';
-  if(videoTitle) videoTitle.style.color = darkNow ? '#fff' : 'var(--text, #111)';
-  if(videoPlayer){
-    videoPlayer.style.background = darkNow ? '#000' : '#fff';
-    videoPlayer.style.outline = darkNow ? 'none' : '1px solid rgba(0,0,0,0.06)';
+  const saved = findResumeForPath(currentEpisode);
+  let startTime = 0;
+  if(useResume && saved && saved.entry && saved.entry.position > 1 && !saved.entry.completed){
+    startTime = saved.entry.position;
   }
 
-  videoPlayer.src = fileUrl(currentEpisode.path);
-  videoPlayer.preload = 'auto';
+  videoPlayer.innerHTML = '';
+
+  const source = document.createElement('source');
+  source.src = src;
+  source.type = 'video/mp4';
+  videoPlayer.appendChild(source);
+
+  if(currentEpisode.subtitles && currentEpisode.subtitles.length > 0){
+    const subtitleUrl = fileUrl(currentEpisode.subtitles[0]);
+    const track = document.createElement('track');
+    track.kind = 'subtitles';
+    track.label = 'English';
+    track.srclang = 'en';
+    track.src = subtitleUrl;
+    track.default = true;
+    videoPlayer.appendChild(track);
+  }
+
+  if (!window.plyrInstance) {
+    window.plyrInstance = new Plyr(videoPlayer, {
+      controls: [
+        'play-large',
+        'play',
+        'progress',
+        'current-time',
+        'duration',
+        'mute',
+        'volume',
+        'captions',
+        'settings',
+        'pip',
+        'airplay',
+        'fullscreen'
+      ],
+      settings: ['captions', 'speed'],
+      fullscreen: { enabled: true, fallback: true, iosNative: false },
+      clickToPlay: false,
+      hideControls: true,
+      resetOnEnd: false,
+      keyboard: { focused: true, global: true },
+      tooltips: { controls: true, seek: true }
+    });
+
+    try {
+      const allImages = document.querySelectorAll('img[loading="lazy"]');
+      allImages.forEach(img => {
+        if (img.src && !img.complete) {
+          img.dataset.originalSrc = img.src;
+          img.removeAttribute('src');
+        }
+      });
+      console.log('Paused lazy image loading for video playback');
+    } catch(e) {
+      console.warn('Could not pause image loading', e);
+    }
+
+    window.plyrInstance.on('ended', () => {
+      handleEpisodeEnded();
+    });
+
+    window.plyrInstance.on('pause', () => {
+      saveNow();
+      releaseWakeLock().catch(()=>{});
+    });
+
+    window.plyrInstance.on('play', () => {
+      requestWakeLock().catch(()=>{});
+    });
+
+    window.plyrInstance.on('seeked', () => {
+      saveNow();
+    });
+
+    window.plyrInstance.on('enterfullscreen', async () => {
+      try {
+        if (screen.orientation && screen.orientation.lock) {
+          await screen.orientation.lock('landscape').catch(e => console.log('Orientation lock not supported:', e));
+        }
+      } catch(e) {
+        console.log('Could not lock orientation:', e);
+      }
+    });
+
+    window.plyrInstance.on('exitfullscreen', () => {
+      try {
+        if (screen.orientation && screen.orientation.unlock) {
+          screen.orientation.unlock();
+        }
+      } catch(e) {
+        console.log('Could not unlock orientation:', e);
+      }
+    });
+
+    setTimeout(() => {
+      const plyrWrapper = document.querySelector('.plyr__video-wrapper');
+      if (plyrWrapper) {
+        let lastTap = 0;
+        let tapTimeout = null;
+
+        plyrWrapper.addEventListener('touchend', (e) => {
+          const currentTime = Date.now();
+          const tapLength = currentTime - lastTap;
+
+          if (tapLength < 300 && tapLength > 0) {
+            clearTimeout(tapTimeout);
+            e.preventDefault();
+            e.stopPropagation();
+
+            const rect = plyrWrapper.getBoundingClientRect();
+            const touchX = e.changedTouches[0].clientX - rect.left;
+            const width = rect.width;
+
+            if (touchX < width / 3) {
+              window.plyrInstance.rewind(10);
+              console.log('Rewind 10s');
+            } else if (touchX > (2 * width) / 3) {
+              window.plyrInstance.forward(10);
+              console.log('Forward 10s');
+            }
+            lastTap = 0;
+          } else {
+            lastTap = currentTime;
+            tapTimeout = setTimeout(() => {
+              lastTap = 0;
+              if (window.plyrInstance && document.querySelector('.plyr--hide-controls') === null) {
+                const controlsDiv = document.querySelector('.plyr__controls');
+                if (controlsDiv && getComputedStyle(controlsDiv).opacity !== '0') {
+                  const video = document.querySelector('.plyr video');
+                  if (video) video.click();
+                }
+              }
+            }, 300);
+          }
+        });
+      }
+    }, 500);
+  } else {
+    const subtitles = [];
+    if(currentEpisode.subtitles && currentEpisode.subtitles.length > 0){
+      const subtitleUrl = fileUrl(currentEpisode.subtitles[0]);
+      subtitles.push({ kind: 'captions', label: 'English', srclang: 'en', src: subtitleUrl, default: true });
+    }
+    window.plyrInstance.source = {
+      type: 'video',
+      sources: [{ src: src, type: 'video/mp4' }],
+      tracks: subtitles
+    };
+  }
+
   videoModal.style.display = 'flex';
   videoTitle.textContent = currentEpisode.name || '';
 
-  const saved = findResumeForPath(currentEpisode);
-  let playAttempted = false;
-
-  function attemptPlay(){
-    if(playAttempted) return;
-    playAttempted = true;
-    
-    console.debug('[Shows] attempting play', { duration: videoPlayer.duration, saved, useResume });
-    
-    if(useResume && saved && saved.entry && saved.entry.position > 1 && !saved.entry.completed){
-      if(videoPlayer.duration && !isNaN(videoPlayer.duration) && videoPlayer.duration > 0){
-        try { 
-          const seekTo = Math.min(saved.entry.position, videoPlayer.duration - 2);
-          videoPlayer.currentTime = seekTo;
-          console.debug('[Shows] seeking to', seekTo); 
-        } catch(e){ 
-          console.warn('seek failed', e); 
-        }
-      } else {
-        console.warn('[Shows] cannot seek - duration not available yet');
-      }
-    }
-    startAutosave();
-    videoPlayer.play().catch(e => console.warn('Play failed:', e));
+  if (startTime > 0) {
+    window.plyrInstance.once('canplay', () => {
+      window.plyrInstance.currentTime = startTime;
+      console.log('Resume position set to:', startTime);
+    });
   }
 
-  videoPlayer.addEventListener('loadedmetadata', () => {
-    console.log('Metadata loaded');
-    attemptPlay();
-  }, { once: true });
-
-  videoPlayer.addEventListener('canplay', () => {
-    console.log('Can play');
-    attemptPlay();
-  }, { once: true });
-
-  setTimeout(() => {
-    if(!playAttempted && videoPlayer.readyState >= 1){
-      console.log('Timeout fallback - forcing play');
-      attemptPlay();
-    }
-  }, 2000);
-
-  attachVideoListeners();
-  startStallWatcher(videoPlayer, videoPlayer.src);
+  startAutosave();
+  window.plyrInstance.play().catch(e => console.warn('Play failed:', e));
 }
 
 /* When an episode ends: mark episode completed and either auto-advance to the next episode
@@ -1360,12 +1523,13 @@ function handleEpisodeEnded(){
     try {
       const store = readResume();
       const key = fileKey(currentEpisode.path, currentEpisode.sz||0, currentEpisode.mt||0);
-      store[key] = { completed: true, position: 0, duration: Math.floor(videoPlayer.duration || 0), updated: Date.now(), title: currentEpisode.name || '' };
+      const dur = window.plyrInstance ? Math.floor(window.plyrInstance.duration || 0) : 0;
+      store[key] = { completed: true, position: 0, duration: dur, updated: Date.now(), title: currentEpisode.name || '' };
       writeResume(store);
     } catch(e){ console.warn('failed to mark completed', e); }
   }
 
-  // Stop the periodic autosave 
+  // Stop the periodic autosave
   stopAutosave();
 
   // Determine current index robustly
@@ -1417,26 +1581,33 @@ function nextEpisode(){
   const next = flattenedEpisodes[nextIdx];
   console.debug('[Shows] nextEpisode ->', nextIdx, next.path);
 
-  // write a tiny resume for next (position=1) so UI shows upcoming
-    try {
-        const key = fileKey(next.path, next.sz||0, next.mt||0);
-        const entry = { position: 1, duration: next.sz || 0, updated: Date.now(), title: next.name || '' };
-        // Save and purge other non-completed resumes in the same show
-        saveResumeEntryByKey(key, entry, true);
-    } catch(e){ console.warn('saving resume for next failed', e); }
+  try {
+    const key = fileKey(next.path, next.sz||0, next.mt||0);
+    const entry = { position: 1, duration: next.sz || 0, updated: Date.now(), title: next.name || '' };
+    saveResumeEntryByKey(key, entry, true);
+  } catch(e){ console.warn('saving resume for next failed', e); }
 
   currentEpisodeIndex = nextIdx;
   currentEpisode = Object.assign({}, next);
 
-  // update title, swap src and play
   videoTitle.textContent = currentEpisode.name || '';
-  detachVideoListeners();
-  videoPlayer.pause();
-  videoPlayer.src = fileUrl(currentEpisode.path);
-  videoPlayer.load();
-  attachVideoListeners();
-  startStallWatcher(videoPlayer, videoPlayer.src);
-  videoPlayer.play().catch(()=>{});
+
+  const src = fileUrl(currentEpisode.path);
+  const subtitles = [];
+  if(currentEpisode.subtitles && currentEpisode.subtitles.length > 0){
+    const subtitleUrl = fileUrl(currentEpisode.subtitles[0]);
+    subtitles.push({ kind: 'captions', label: 'English', srclang: 'en', src: subtitleUrl, default: true });
+  }
+
+  if(window.plyrInstance){
+    window.plyrInstance.source = {
+      type: 'video',
+      sources: [{ src: src, type: 'video/mp4' }],
+      tracks: subtitles
+    };
+    window.plyrInstance.play().catch(()=>{});
+  }
+
   const sd = findShowDirForEpisodePath(currentEpisode && currentEpisode.path);
   if(sd) updateShowBadge(sd);
 }
@@ -1448,31 +1619,27 @@ function stopAutosave(){ if(autosaveTimer){ clearInterval(autosaveTimer); autosa
 function saveNow(){
   try {
     if(!currentEpisode || !currentEpisode.path) return;
-    const cur = Math.floor(videoPlayer.currentTime || 0);
-    const dur = Math.floor(videoPlayer.duration || 0);
+    if(!window.plyrInstance) return;
+    const cur = Math.floor(window.plyrInstance.currentTime || 0);
+    const dur = Math.floor(window.plyrInstance.duration || 0);
     if(!isFinite(cur)) return;
     if(cur > 0 && dur > 0){
       const key = fileKey(currentEpisode.path, currentEpisode.sz || 0, currentEpisode.mt || 0);
 
-      // preserve previous logic: do not overwrite an already-completed entry for the same file
       const store = readResume();
       const existing = store[key];
       if(existing && existing.completed) return;
 
       const entry = { position: cur, duration: dur, updated: Date.now(), title: currentEpisode.name || '' };
 
-      // Save and purge other non-completed resume entries for this show so only the latest is kept
       saveResumeEntryByKey(key, entry, true);
 
       console.debug('[Shows] autosave', { key, pos: cur, dur });
 
-      // update only the show badge (stops full-grid re-render and thumbnail flashing)
       const showDir = findShowDirForEpisodePath(currentEpisode.path);
       if(showDir) updateShowBadge(showDir);
 
-      // if episode modal is open for the same show, update its resume banner too
       if(episodeModal.style.display === 'flex' && currentShow && normalizePath(currentShow.dir) === showDir){
-        // rebuild the resume banner minimal contents (do not re-render the whole list)
         const showResume = findResumeForShowDir(showDir);
         if(showResume && showResume.entry && !showResume.entry.completed && (showResume.entry.position && showResume.entry.position > 0)){
           episodeResumeBanner.style.display='block'; episodeResumeBanner.innerHTML = '';
