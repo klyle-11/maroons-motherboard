@@ -72,43 +72,73 @@
         }
 
         #comic-container.webtoon {
-            padding: 60px 0 0 0;
+            padding: 60px 0 100px 0;
         }
 
         #comic-container.single-page {
             padding: 60px 20px 100px 20px;
-            justify-content: center;
+            justify-content: flex-start;
             min-height: 100vh;
+            gap: 20px;
         }
 
         #comic-container.dual-page {
             padding: 60px 20px 100px 20px;
+            flex-direction: row;
+            flex-wrap: wrap;
             justify-content: center;
+            align-items: flex-start;
             min-height: 100vh;
         }
 
         .comic-page {
             max-width: 100%;
             height: auto;
+            display: none;
+        }
+
+        .comic-page.active {
             display: block;
         }
 
         #comic-container.webtoon .comic-page {
-            margin-bottom: 0;
+            margin: 0;
+            padding: 0;
             width: 100%;
+            display: block !important;
         }
 
         #comic-container.single-page .comic-page {
-            max-height: calc(100vh - 200px);
+            max-height: calc(100vh - 180px);
             object-fit: contain;
+            display: none;
+            margin: auto;
+        }
+
+        #comic-container.single-page .comic-page.active {
+            display: block;
+        }
+
+        #comic-container.dual-page {
+            flex-direction: row;
+            justify-content: center;
+            gap: 10px;
         }
 
         #comic-container.dual-page .comic-page {
-            max-height: calc(100vh - 200px);
-            max-width: 48%;
+            max-height: calc(100vh - 180px);
+            max-width: calc(50% - 20px);
+            width: auto;
             object-fit: contain;
+            display: none;
+        }
+
+        #comic-container.dual-page .comic-page.active {
             display: inline-block;
-            margin: 0 1%;
+        }
+
+        #comic-container.dual-page.rtl {
+            flex-direction: row-reverse;
         }
 
         #loading {
@@ -117,10 +147,37 @@
             left: 50%;
             transform: translate(-50%, -50%);
             background: rgba(0, 0, 0, 0.9);
-            padding: 20px 40px;
+            padding: 30px 50px;
             border-radius: 8px;
             font-size: 18px;
             z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+        }
+
+        body.light #loading {
+            background: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #2196F3;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        body.light .spinner {
+            border-color: rgba(0, 0, 0, 0.1);
+            border-top-color: #2196F3;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
 
         #error {
@@ -133,6 +190,23 @@
             border-radius: 8px;
             font-size: 16px;
             z-index: 1000;
+            display: none;
+        }
+
+        #controls {
+            position: fixed;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            z-index: 100;
+            transition: transform 0.3s;
+        }
+
+        #controls.hidden {
+            transform: translate(-50%, 150%);
+        }
+
+        #controls.webtoon-mode {
             display: none;
         }
 
@@ -221,13 +295,32 @@
             min-width: 250px;
         }
 
-        body.light #settings-panel {
-            background: rgba(255, 255, 255, 0.98);
-            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-        }
-
         #settings-panel.visible {
             display: block;
+        }
+
+        body.light #settings-panel {
+            background: rgba(255, 255, 255, 0.98);
+            border: 1px solid #ddd;
+        }
+
+        .setting-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .setting-row:last-child {
+            margin-bottom: 0;
+        }
+
+        #direction-setting {
+            display: none;
+        }
+
+        #direction-setting.visible {
+            display: flex;
         }
 
         .setting-row {
@@ -244,6 +337,153 @@
         .setting-row input {
             width: 100%;
         }
+
+        .keyboard-hint {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.85);
+            padding: 15px 25px;
+            border-radius: 8px;
+            font-size: 14px;
+            z-index: 90;
+            opacity: 0;
+            animation: fadeInOut 4s ease-in-out;
+            pointer-events: none;
+            text-align: center;
+            line-height: 1.6;
+        }
+
+        body.light .keyboard-hint {
+            background: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+
+        @keyframes fadeInOut {
+            0%, 100% { opacity: 0; }
+            10%, 90% { opacity: 1; }
+        }
+
+        .keyboard-hint kbd {
+            background: #555;
+            padding: 2px 6px;
+        }
+
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            color: white;
+            font-size: 18px;
+            z-index: 1000;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #2196F3;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        body.light .spinner {
+            border-color: rgba(0, 0, 0, 0.1);
+            border-top-color: #2196F3;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .keyboard-hint {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.85);
+            color: #fff;
+            padding: 12px 20px;
+            border-radius: 6px;
+            font-size: 13px;
+            z-index: 90;
+            opacity: 0;
+            max-width: 90%;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            animation: slideUp 0.3s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+
+        body.light .keyboard-hint {
+            background: rgba(255, 255, 255, 0.95);
+            color: #333;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.15);
+        }
+
+        .keyboard-hint kbd {
+            background: #555;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+            margin: 0 2px;
+        }
+
+        body.light .keyboard-hint kbd {
+            background: #e0e0e0;
+            color: #333;
+        }
+
+        .setting-row {
+            margin: 12px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .setting-row label {
+            margin-right: 10px;
+            font-weight: 500;
+        }
+
+        .setting-row select {
+            padding: 6px 10px;
+            border-radius: 4px;
+            border: 1px solid #666;
+            background: #444;
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        body.light .setting-row select {
+            background: #fff;
+            color: #333;
+            border-color: #ccc;
+        }
+
+        .setting-row select:hover {
+            border-color: #888;
+        }
+
+        body.light .setting-row select:hover {
+            border-color: #999;
+        }
     </style>
 </head>
 <body>
@@ -257,9 +497,16 @@
         <div class="setting-row">
             <label>Reading Mode:</label>
             <select id="reading-mode" onchange="changeReadingMode()">
-                <option value="webtoon">Webtoon (Scroll)</option>
+                <option value="webtoon">Infinite Scroll</option>
                 <option value="single-page">Single Page</option>
                 <option value="dual-page">Dual Page</option>
+            </select>
+        </div>
+        <div class="setting-row" id="direction-setting">
+            <label>Page Order:</label>
+            <select id="reading-direction" onchange="changeReadingDirection()">
+                <option value="ltr">Left to Right</option>
+                <option value="rtl">Right to Left (Manga)</option>
             </select>
         </div>
         <div class="setting-row">
@@ -268,6 +515,7 @@
                 <option value="dark">Dark</option>
                 <option value="light">Light</option>
             </select>
+        </div>
         </div>
     </div>
 
@@ -289,15 +537,128 @@
         let isLoading = false;
         let endReached = false;
         let readingMode = 'webtoon';
+        let readingDirection = 'ltr';
         let hideTimer = null;
+        const PRELOAD_COUNT = 5;
+        const INITIAL_LOAD_COUNT = 10;
+        let comicImages = [];
 
-        function showLoading() {
-            document.getElementById('loading').style.display = 'block';
+        function normalizePath(p) {
+            if (!p) return '/';
+            p = String(p);
+            if (!p.startsWith('/')) p = '/' + p;
+            while (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+            return p;
+        }
+
+        function isImageFile(name) {
+            return /\.(jpe?g|png|gif|webp|bmp)$/i.test(name);
+        }
+
+        function naturalSort(a, b) {
+            const nameA = a.name || a.n || '';
+            const nameB = b.name || b.n || '';
+            return nameA.localeCompare(nameB, undefined, {numeric: true, sensitivity: 'base'});
+        }
+
+        function showLoading(text = 'Loading comic...') {
+            const loading = document.getElementById('loading');
+            loading.style.display = 'flex';
+            const textEl = loading.querySelector('div:last-child');
+            if (textEl) textEl.textContent = text;
         }
 
         function hideLoading() {
             document.getElementById('loading').style.display = 'none';
         }
+
+        async function fetchComicIndex(path) {
+            try {
+                const url = `/listfiles?dir=${encodeURIComponent(normalizePath(path))}`;
+                const res = await fetch(url);
+                if (!res.ok) {
+                    throw new Error('Directory listing failed: ' + res.status);
+                }
+                const data = await res.json();
+
+                if (!Array.isArray(data)) {
+                    return null;
+                }
+
+                const entries = data.map(f => ({
+                    t: f.isDir ? 'd' : 'f',
+                    n: f.name.replace(/\/$/, ''),
+                    p: normalizePath(path + '/' + f.name.replace(/\/$/, '')),
+                    sz: f.size || 0
+                }));
+
+                return entries;
+            } catch (err) {
+                console.error('fetchComicIndex error:', err);
+                return null;
+            }
+        }
+
+        async function triggerScan(path) {
+            console.log('Comic folder detected, no scan needed - using direct listing');
+        }
+
+        async function fetchComicImages() {
+            showLoading('Loading comic images...');
+
+            let entries = await fetchComicIndex(comicPath);
+
+            if (!entries) {
+                await triggerScan(comicPath);
+
+                let retries = 0;
+                while (retries < 5) {
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    entries = await fetchComicIndex(comicPath);
+                    if (entries) break;
+                    retries++;
+                    console.log(`Retry ${retries}/5 waiting for index...`);
+                }
+
+                if (!entries) {
+                    hideLoading();
+                    showError('Failed to load comic directory. Index build timeout.');
+                    return false;
+                }
+            }
+
+            const normalizedPath = normalizePath(comicPath);
+            const imageFiles = entries.filter(e => {
+                if (!e.p || !e.n || e.t !== 'f') return false;
+                const entryPath = normalizePath(e.p);
+                if (!entryPath.startsWith(normalizedPath + '/')) return false;
+                const relativePath = entryPath.substring(normalizedPath.length + 1);
+                if (relativePath.includes('/')) return false;
+                return isImageFile(e.n);
+            });
+
+            if (imageFiles.length === 0) {
+                hideLoading();
+                showError('No images found in comic folder');
+                return false;
+            }
+
+            imageFiles.sort((a, b) => naturalSort(a, b));
+
+            comicImages = imageFiles.map(f => ({
+                path: normalizePath(f.p),
+                name: f.n
+            }));
+
+            loadedPages = 0;
+            endReached = false;
+            currentPage = 0;
+
+            console.log(`Found ${comicImages.length} images in comic folder`);
+            return true;
+        }
+
+
 
         function showError(msg) {
             const errorEl = document.getElementById('error');
@@ -317,146 +678,273 @@
             document.getElementById('next-btn').disabled = endReached && currentPage >= loadedPages - 1;
         }
 
-        function getPageUrl(pageNum) {
-            const paddedNum = String(pageNum).padStart(5, '0');
-            return `${comicPath}/${paddedNum}[HQ].jpg`;
-        }
-
-        function getPageUrlAlt(pageNum) {
-            const paddedNum = String(pageNum).padStart(5, '0');
-            return `${comicPath}/${paddedNum}.jpg`;
-        }
-
-        function getPageUrlPng(pageNum) {
-            const paddedNum = String(pageNum).padStart(5, '0');
-            return `${comicPath}/${paddedNum}[HQ].png`;
-        }
-
-        function getPageUrlPngAlt(pageNum) {
-            const paddedNum = String(pageNum).padStart(5, '0');
-            return `${comicPath}/${paddedNum}.png`;
-        }
-
         async function loadNextImage() {
-            if (isLoading || endReached) return;
-            
+            if (isLoading || loadedPages >= comicImages.length) {
+                if (loadedPages >= comicImages.length) endReached = true;
+                return Promise.resolve();
+            }
+
             isLoading = true;
             const pageNum = loadedPages;
-            
-            const img = new Image();
-            const container = document.getElementById('comic-container');
-            
-            let loaded = false;
-            
-            const urls = [
-                getPageUrl(pageNum),
-                getPageUrlAlt(pageNum),
-                getPageUrlPng(pageNum),
-                getPageUrlPngAlt(pageNum)
-            ];
 
-            for (const url of urls) {
-                await new Promise((resolve) => {
-                    img.onload = () => {
-                        loaded = true;
-                        img.className = 'comic-page';
-                        container.appendChild(img);
-                        loadedPages++;
-                        console.log(`Loaded page ${pageNum}: ${url}`);
-                        resolve();
-                    };
-                    img.onerror = () => resolve();
-                    img.src = url;
-                    setTimeout(() => resolve(), 2000);
-                });
-                
-                if (loaded) break;
+            const container = document.getElementById('comic-container');
+            const imgData = comicImages[pageNum];
+
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.className = 'comic-page';
+                img.alt = `Page ${pageNum + 1}`;
+                img.dataset.pageIndex = pageNum;
+
+                img.onload = () => {
+                    container.appendChild(img);
+                    loadedPages++;
+                    console.log(`Loaded page ${pageNum + 1}: ${imgData.name}`);
+                    isLoading = false;
+                    updateButtons();
+                    updateVisiblePages();
+
+                    preloadNextImages();
+                    resolve();
+                };
+
+                img.onerror = () => {
+                    console.error(`Failed to load image: ${imgData.path}`);
+                    isLoading = false;
+                    updateButtons();
+                    resolve();
+                };
+
+                img.src = imgData.path;
+            });
+        }
+
+        async function preloadNextImages() {
+            const start = loadedPages;
+            const end = Math.min(start + PRELOAD_COUNT, comicImages.length);
+
+            for (let i = start; i < end; i++) {
+                if (i >= comicImages.length) break;
+
+                const img = new Image();
+                img.src = comicImages[i].path;
             }
-            
-            if (!loaded) {
-                console.log(`No more pages found at ${pageNum}`);
-                endReached = true;
-            }
-            
-            isLoading = false;
-            updateButtons();
         }
 
         async function loadInitialPages() {
-            showLoading();
-            
-            const initialCount = readingMode === 'webtoon' ? 5 : 3;
-            
-            for (let i = 0; i < initialCount; i++) {
+            showLoading('Loading comic pages...');
+
+            const loadCount = readingMode === 'webtoon' ? INITIAL_LOAD_COUNT : 5;
+
+            for (let i = 0; i < loadCount && i < comicImages.length; i++) {
                 await loadNextImage();
                 if (endReached) break;
             }
-            
+
             hideLoading();
-            
+
             if (loadedPages === 0) {
-                showError('No images found in comic folder');
+                showError('No images could be loaded');
+                return;
             }
+
+            updateVisiblePages();
+            preloadNextImages();
         }
 
-        function nextPage() {
-            if (readingMode === 'webtoon') {
-                const container = document.getElementById('comic-container');
-                const images = container.getElementsByClassName('comic-page');
-                if (currentPage < loadedPages - 1) {
-                    currentPage++;
-                    images[currentPage].scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    updatePageInfo();
-                    updateButtons();
-                }
-            } else {
-                if (currentPage < loadedPages - 1) {
-                    currentPage++;
-                    scrollToPage(currentPage);
-                } else if (!endReached) {
-                    loadNextImage().then(() => {
-                        if (loadedPages > currentPage + 1) {
-                            currentPage++;
-                            scrollToPage(currentPage);
-                        }
-                    });
-                }
-            }
-            startAutoHideTimer();
-        }
-
-        function previousPage() {
-            if (currentPage > 0) {
-                currentPage--;
-                scrollToPage(currentPage);
-            }
-            startAutoHideTimer();
-        }
-
-        function scrollToPage(pageNum) {
+        function updateVisiblePages() {
             const container = document.getElementById('comic-container');
-            const images = container.getElementsByClassName('comic-page');
-            if (images[pageNum]) {
-                images[pageNum].scrollIntoView({ behavior: 'smooth', block: 'center' });
-                updatePageInfo();
-                updateButtons();
+            const images = container.querySelectorAll('.comic-page');
+
+            console.log(`updateVisiblePages: mode=${readingMode}, images=${images.length}, currentPage=${currentPage}`);
+
+            if (readingMode === 'webtoon') {
+                images.forEach(img => {
+                    img.classList.add('active');
+                });
+            } else if (readingMode === 'single-page') {
+                images.forEach((img, idx) => {
+                    if (idx === currentPage) {
+                        img.classList.add('active');
+                    } else {
+                        img.classList.remove('active');
+                    }
+                });
+            } else if (readingMode === 'dual-page') {
+                images.forEach((img, idx) => {
+                    const isVisible = (idx === currentPage || idx === currentPage + 1);
+
+                    if (isVisible) {
+                        img.classList.add('active');
+                    } else {
+                        img.classList.remove('active');
+                    }
+                });
+
+                if (currentPage + 1 >= loadedPages && currentPage + 1 < comicImages.length && !endReached) {
+                    console.log('Dual page needs second image, loading...');
+                    loadNextImage();
+                }
             }
         }
 
         function changeReadingMode() {
             const newMode = document.getElementById('reading-mode').value;
             readingMode = newMode;
-            
+
             const container = document.getElementById('comic-container');
+            const controls = document.getElementById('controls');
+            const directionSetting = document.getElementById('direction-setting');
+
             container.className = newMode;
-            
-            if (newMode === 'webtoon') {
-                scrollToPage(currentPage);
-            } else {
-                scrollToPage(currentPage);
+            if (readingDirection === 'rtl' && newMode === 'dual-page') {
+                container.classList.add('rtl');
             }
-            
+
+            if (newMode === 'webtoon') {
+                directionSetting.classList.remove('visible');
+                controls.classList.add('webtoon-mode');
+            } else {
+                directionSetting.classList.add('visible');
+                controls.classList.remove('webtoon-mode');
+            }
+
+            currentPage = 0;
+            updateVisiblePages();
+
+            if (newMode !== 'webtoon') {
+                scrollToActivePage();
+            }
+
             saveSettings();
+        }
+
+        function changeReadingDirection() {
+            readingDirection = document.getElementById('reading-direction').value;
+
+            const container = document.getElementById('comic-container');
+            if (readingDirection === 'rtl' && readingMode === 'dual-page') {
+                container.classList.add('rtl');
+            } else {
+                container.classList.remove('rtl');
+            }
+
+            updateVisiblePages();
+            saveSettings();
+        }
+
+        function nextPage() {
+            if (readingMode === 'webtoon') {
+                const container = document.getElementById('comic-container');
+                const images = container.querySelectorAll('.comic-page');
+                if (currentPage < images.length - 1) {
+                    currentPage++;
+                    images[currentPage].scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    updatePageInfo();
+                    updateButtons();
+
+                    if (currentPage >= loadedPages - 3 && !endReached) {
+                        loadNextImage();
+                    }
+                }
+            } else if (readingMode === 'single-page') {
+                if (readingDirection === 'rtl') {
+                    if (currentPage > 0) {
+                        currentPage--;
+                        updateVisiblePages();
+                        scrollToActivePage();
+                    }
+                } else {
+                    if (currentPage < comicImages.length - 1) {
+                        currentPage++;
+                        if (currentPage >= loadedPages && !endReached) {
+                            loadNextImage().then(() => {
+                                updateVisiblePages();
+                                scrollToActivePage();
+                            });
+                        } else {
+                            updateVisiblePages();
+                            scrollToActivePage();
+                        }
+                    }
+                }
+            } else if (readingMode === 'dual-page') {
+                if (readingDirection === 'rtl') {
+                    if (currentPage > 0) {
+                        currentPage = Math.max(0, currentPage - 2);
+                        updateVisiblePages();
+                        scrollToActivePage();
+                    }
+                } else {
+                    if (currentPage < comicImages.length - 2) {
+                        currentPage += 2;
+                        if (currentPage >= loadedPages - 1 && !endReached) {
+                            loadNextImage().then(() => loadNextImage()).then(() => {
+                                updateVisiblePages();
+                                scrollToActivePage();
+                            });
+                        } else {
+                            updateVisiblePages();
+                            scrollToActivePage();
+                        }
+                    }
+                }
+            }
+            updatePageInfo();
+            updateButtons();
+            startAutoHideTimer();
+        }
+
+        function previousPage() {
+            if (readingMode === 'webtoon') {
+                if (currentPage > 0) {
+                    currentPage--;
+                    const container = document.getElementById('comic-container');
+                    const images = container.querySelectorAll('.comic-page');
+                    images[currentPage].scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    updatePageInfo();
+                    updateButtons();
+                }
+            } else if (readingMode === 'single-page') {
+                if (readingDirection === 'rtl') {
+                    if (currentPage < comicImages.length - 1) {
+                        currentPage++;
+                        updateVisiblePages();
+                        scrollToActivePage();
+                    }
+                } else {
+                    if (currentPage > 0) {
+                        currentPage--;
+                        updateVisiblePages();
+                        scrollToActivePage();
+                    }
+                }
+            } else if (readingMode === 'dual-page') {
+                if (readingDirection === 'rtl') {
+                    if (currentPage < comicImages.length - 2) {
+                        currentPage = Math.min(comicImages.length - 2, currentPage + 2);
+                        updateVisiblePages();
+                        scrollToActivePage();
+                    }
+                } else {
+                    if (currentPage > 0) {
+                        currentPage = Math.max(0, currentPage - 2);
+                        updateVisiblePages();
+                        scrollToActivePage();
+                    }
+                }
+            }
+            updatePageInfo();
+            updateButtons();
+            startAutoHideTimer();
+        }
+
+        function scrollToActivePage() {
+            const container = document.getElementById('comic-container');
+            const activeImg = container.querySelector('.comic-page.active');
+            if (activeImg) {
+                activeImg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
         }
 
         function changeTheme() {
@@ -477,10 +965,10 @@
         function startAutoHideTimer() {
             const header = document.getElementById('header');
             const controls = document.getElementById('controls');
-            
+
             header.classList.remove('hidden');
             controls.classList.remove('hidden');
-            
+
             clearTimeout(hideTimer);
             hideTimer = setTimeout(() => {
                 header.classList.add('hidden');
@@ -492,6 +980,7 @@
             try {
                 const settings = {
                     readingMode: document.getElementById('reading-mode').value,
+                    readingDirection: document.getElementById('reading-direction').value,
                     theme: document.getElementById('theme').value
                 };
                 localStorage.setItem('comic_reader_settings', JSON.stringify(settings));
@@ -505,10 +994,26 @@
                 const saved = localStorage.getItem('comic_reader_settings');
                 if (saved) {
                     const settings = JSON.parse(saved);
+                    const controls = document.getElementById('controls');
+                    const directionSetting = document.getElementById('direction-setting');
+                    const container = document.getElementById('comic-container');
+
                     if (settings.readingMode) {
                         document.getElementById('reading-mode').value = settings.readingMode;
                         readingMode = settings.readingMode;
-                        document.getElementById('comic-container').className = readingMode;
+                        container.className = readingMode;
+
+                        if (readingMode === 'webtoon') {
+                            directionSetting.classList.remove('visible');
+                            controls.classList.add('webtoon-mode');
+                        } else {
+                            directionSetting.classList.add('visible');
+                            controls.classList.remove('webtoon-mode');
+                        }
+                    }
+                    if (settings.readingDirection) {
+                        document.getElementById('reading-direction').value = settings.readingDirection;
+                        readingDirection = settings.readingDirection;
                     }
                     if (settings.theme) {
                         document.getElementById('theme').value = settings.theme;
@@ -523,13 +1028,6 @@
         }
 
         window.addEventListener('scroll', () => {
-            const scrollPosition = window.scrollY + window.innerHeight;
-            const pageHeight = document.documentElement.scrollHeight;
-            
-            if (scrollPosition > pageHeight - 800 && !isLoading && !endReached) {
-                loadNextImage();
-            }
-            
             startAutoHideTimer();
         });
 
@@ -544,8 +1042,24 @@
             } else if (e.key === 'ArrowLeft') {
                 e.preventDefault();
                 previousPage();
+            } else if (e.key === 's' || e.key === 'S') {
+                e.preventDefault();
+                toggleSettings();
+            } else if (e.key === 'f' || e.key === 'F') {
+                e.preventDefault();
+                toggleFullscreen();
             }
         });
+
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {
+                    console.error('Fullscreen error:', err);
+                });
+            } else {
+                document.exitFullscreen();
+            }
+        }
 
         document.addEventListener('click', (e) => {
             if (!e.target.closest('#settings-panel') && !e.target.closest('#settings-btn')) {
@@ -553,24 +1067,60 @@
             }
         });
 
+        window.addEventListener('scroll', () => {
+            startAutoHideTimer();
+
+            if (readingMode === 'webtoon' && !endReached && !isLoading) {
+                const scrollHeight = document.documentElement.scrollHeight;
+                const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+                const clientHeight = window.innerHeight;
+
+                if (scrollTop + clientHeight >= scrollHeight - 1000) {
+                    console.log('Near bottom, loading more images...');
+                    loadNextImage();
+                }
+            }
+        });
+
         async function init() {
             const urlParams = new URLSearchParams(window.location.search);
             const path = urlParams.get('path');
-            
+
             if (!path) {
                 showError('No comic path specified');
                 hideLoading();
                 return;
             }
-            
+
             comicPath = path;
             document.getElementById('comic-title').textContent = path.split('/').pop();
-            
+
             loadSettings();
-            
+
+            const controls = document.getElementById('controls');
+            if (readingMode === 'webtoon') {
+                controls.classList.add('webtoon-mode');
+            }
+
+            const success = await fetchComicImages();
+            if (!success) return;
+
             await loadInitialPages();
-            
+
             startAutoHideTimer();
+
+            const firstVisitKey = 'comic_reader_first_visit';
+            if (!localStorage.getItem(firstVisitKey)) {
+                const hint = document.getElementById('keyboardHint');
+                if (hint) {
+                    hint.style.display = 'block';
+                    hint.style.animation = 'fadeInOut 5s ease-in-out';
+                    setTimeout(() => {
+                        hint.style.display = 'none';
+                    }, 5000);
+                    localStorage.setItem(firstVisitKey, 'true');
+                }
+            }
         }
 
         init();
