@@ -6,24 +6,69 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>Nomad • Shows</title>
 <link rel="stylesheet" href="assets/plyr.css" />
-<script src="assets/plyr.min.js"></script>
-<style>
-  :root{
-    --primary:#007bff; --primary-dark:#0056b3; --bg:#f4f4f9; --text:#333; --muted:#6b7280;
-    --radius:10px; --shadow:0 8px 24px rgba(0,0,0,0.08);
-    --card-gap:1rem;
-  }
-  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-  html,body{height:100%}
-  body{font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column;min-height:100vh}
-  header{background:var(--primary);color:#fff;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:60;box-shadow:var(--shadow)}
-  header h1{font-size:clamp(1.15rem,4vw,1.5rem);margin:0;font-weight:700}
-  .back-btn{text-decoration:none;color:#fff;background:var(--primary-dark);padding:.45rem .7rem;border-radius:8px;font-size:0.95rem;display:inline-block}
+<link rel="stylesheet" href="/master.css">
+<script>
+(function() {
+  try {
+    const isDark = localStorage.getItem('nomad_dark_mode') === 'true';
+    if (isDark) document.documentElement.classList.add('dark');
 
-  .toolbar{background:var(--bg);padding:.65rem 1rem;display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;border-bottom:1px solid #e6e9ef;position:sticky;top:68px;z-index:55;}
-  .toolbar input[type="search"]{flex:1 1 220px;padding:.5rem .75rem;border:1px solid #d6d9e6;border-radius:8px;font-size:0.95rem;background:#fff}
-  .toolbar select, .toolbar .view-btn{padding:.48rem .7rem;border:1px solid #d6d9e6;background:#fff;border-radius:8px;font-size:0.9rem;cursor:pointer}
-  .view-btn.active{background:var(--primary);color:#fff;border-color:var(--primary-dark);}
+    const saved = localStorage.getItem('nomad_custom_theme');
+    if (saved) {
+      const colors = JSON.parse(saved);
+      const style = document.createElement('style');
+      style.id = 'custom-theme-style';
+      style.textContent = `
+        :root {
+          --primary: ${colors.primary} !important;
+          --primary-dark: ${colors.primaryDark} !important;
+          --bg: ${colors.bgLight} !important;
+          --card: ${colors.cardLight} !important;
+          --card-bg: ${colors.cardLight} !important;
+          --text: ${colors.textLight} !important;
+          --muted: ${colors.mutedLight} !important;
+        }
+        body.dark {
+          --bg: ${colors.bgDark} !important;
+          --card: ${colors.cardDark} !important;
+          --card-bg: ${colors.cardDark} !important;
+          --text: ${colors.textDark} !important;
+          --muted: ${colors.mutedDark} !important;
+          --primary: ${colors.primaryDarkTheme} !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  } catch(e) {}
+})();
+</script>
+<script src="assets/plyr.min.js"></script>
+<script src="/theme-manager.js"></script>
+<style>
+  /* Functional CSS: Shows-specific layout and Plyr.js customization */
+  :root{
+    --card-gap:1rem;
+    --header-height:68px; /* fallback used by CSS; JS will set exact top */
+  }
+  html,body{height:100%}
+  body{display:flex;flex-direction:column;min-height:100vh}
+  header{position:sticky;top:0;z-index:60;}
+
+  .toolbar{
+    padding:.65rem 1rem;
+    display:flex;
+    flex-wrap:wrap;
+    gap:.6rem;
+    align-items:center;
+    border-bottom:1px solid var(--line);
+    position:sticky;
+    top:var(--header-height);
+    z-index:55;
+    background:var(--bg);
+  }
+  .toolbar input[type="search"]{flex:1 1 220px;padding:.5rem .75rem;border:1px solid var(--line);border-radius:var(--radius);font-size:0.95rem;background:var(--card);color:var(--text)}
+  .toolbar select, .toolbar .view-btn{padding:.48rem .7rem;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:var(--radius);font-size:0.9rem;cursor:pointer}
+  .view-btn.active{background:var(--primary);color:var(--color-white);border-color:var(--primary-dark);}
 
   main{flex:1;display:flex;flex-direction:column;max-width:1200px;width:100%;margin:0 auto;padding:1rem}
   .grid-wrapper{flex:1;overflow-y:auto;padding-bottom:12px}
@@ -33,25 +78,21 @@
   .media-grid.large  {grid-template-columns:repeat(auto-fill,minmax(220px,1fr));}
 
   @media (max-width:600px){
-    header{flex-direction:column;gap:.5rem;align-items:stretch;}
-    .back-btn{width:100%;text-align:center;}
-    .toolbar{top:112px;}
     .media-grid.small  {grid-template-columns:repeat(2,1fr);}
     .media-grid.medium {grid-template-columns:repeat(3,1fr);}
     .media-grid.large  {grid-template-columns:repeat(4,1fr);}
   }
 
   /* cards */
-  .media-card{background:#fff;border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;transition:transform .22s ease, box-shadow .22s ease;cursor:pointer;width:100%;max-width:220px;margin:0 auto;position:relative;will-change:transform,opacity;}
+  .media-card{width:100%;max-width:220px;margin:0 auto;position:relative;will-change:transform,opacity;}
   .media-grid.small  .media-card{max-width:120px;}
   .media-grid.medium .media-card{max-width:160px;}
   .media-grid.large  .media-card{max-width:220px;}
-  .media-card:hover{transform:translateY(-4px);box-shadow:0 12px 30px rgba(0,0,0,0.10);}
 
-  .thumb-wrapper{position:relative;display:flex;align-items:center;justify-content:center;background:#efeff5;color:#555;font-size:0.9rem;text-align:center;width:100%;aspect-ratio:2/3;overflow:hidden;}
-  .fallback-text{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:2;text-align:center;font-weight:700;color:#06306f;pointer-events:none;padding:6px}
+  .thumb-wrapper{position:relative;display:flex;align-items:center;justify-content:center;background:var(--thumb-bg);color:var(--thumb-text);font-size:0.9rem;text-align:center;width:100%;aspect-ratio:2/3;overflow:hidden;}
+  .fallback-text{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:2;text-align:center;font-weight:700;color:var(--thumb-title);pointer-events:none;padding:6px}
   .media-thumb{display:block;width:100%;height:100%;object-fit:cover;position:absolute;top:0;left:0;z-index:1;opacity:0;transition:opacity .35s ease;}
-  .badge-resume{position:absolute;left:50%;transform:translateX(-50%);bottom:8px;background:rgba(0,0,0,0.6);color:#fff;padding:6px 10px;border-radius:999px;font-weight:700;font-size:12px;z-index:4;display:block;min-width:40px;max-width:85%;overflow:hidden}
+  .badge-resume{position:absolute;left:50%;transform:translateX(-50%);bottom:8px;background:var(--overlay-badge);color:var(--color-white);padding:6px 10px;border-radius:999px;font-weight:700;font-size:12px;z-index:4;display:block;min-width:40px;max-width:85%;overflow:hidden}
   .marquee{display:block;white-space:nowrap;overflow:hidden;position:relative;height:18px}
   .m-inner{display:inline-block;white-space:nowrap}
   .m-inner span{display:inline-block;padding-right:40px}
@@ -59,16 +100,15 @@
   .card-body{display:none}
 
   /* modals */
-  .modal,.episode-modal,.video-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);justify-content:center;align-items:center;z-index:1000;padding:20px;}
-  /* fixed modal size */
-  .modal-content,.episode-modal-content{background:#fff;padding:18px;border-radius:12px;text-align:center;width:94%;max-width:980px;box-shadow:0 12px 44px rgba(0,0,0,0.12);max-height:90vh;overflow:auto}
+  .modal,.episode-modal,.video-modal{display:none;position:fixed;inset:0;background:var(--overlay-modal);justify-content:center;align-items:center;z-index:1000;padding:20px;}
+  .modal-content,.episode-modal-content{background:var(--card-bg);color:var(--text);padding:18px;border-radius:var(--radius);text-align:center;width:94%;max-width:980px;box-shadow:var(--shadow-large);max-height:90vh;overflow:auto}
   .video-modal-content{
-    background:#111;
+    background:var(--dark-bg-secondary);
     padding:18px;
-    border-radius:12px;
+    border-radius:var(--radius);
     width:95%;
     max-width:980px;
-    box-shadow:0 16px 60px rgba(0,0,0,0.28);
+    box-shadow:var(--shadow-large);
     max-height:80vh;
     display:flex;
     flex-direction:column;
@@ -76,34 +116,34 @@
     gap:12px;
     overflow:hidden;
   }
-  
+
   .video-container video {
-    background:#000 !important;
+    background:var(--color-black) !important;
   }
 
-  .modal button,.episode-modal button,.video-modal button{padding:10px 12px;font-size:0.98rem;border-radius:8px;border:0;cursor:pointer}
-  .modal button:not(.cancel):not(.secondary){background:var(--primary);color:#fff;width:100%}
-  .modal button.secondary{background:#f6f9ff;color:var(--primary);border:1px solid rgba(0,123,255,0.12);width:100%}
-  .modal button.cancel{background:#fff;color:#333;border:1px solid #e6e9ef;width:100%}
+  .modal button,.episode-modal button,.video-modal button{padding:10px 12px;font-size:0.98rem;border-radius:var(--radius);border:0;cursor:pointer}
+  .modal button:not(.cancel):not(.secondary){background:var(--primary);color:var(--color-white);width:100%}
+  .modal button.secondary{background:var(--btn-light-bg);color:var(--primary);border:1px solid var(--primary-alpha-12);width:100%}
+  .modal button.cancel{background:var(--color-white);color:var(--text);border:1px solid var(--line);width:100%}
   .episode-list{max-height:60vh;overflow-y:auto;text-align:left;padding:6px}
-  .episode-list .ep-row{display:flex;align-items:center;gap:6px;padding:6px;border-bottom:1px solid #f4f4f9}
-  .episode-list .ep-row button{flex:1;background:var(--primary);border:0;color:#fff;text-align:center;padding:8px;border-radius:8px;cursor:pointer;font-weight:700;font-size:0.95rem}
-  .season-toggle{display:flex;align-items:center;justify-content:space-between;padding:8px;background:var(--primary);color:#fff;border-radius:8px;margin:6px 0;cursor:pointer;font-weight:700}
+  .episode-list .ep-row{display:flex;align-items:center;gap:6px;padding:6px;border-bottom:1px solid var(--line)}
+  .episode-list .ep-row button{flex:1;background:var(--primary);border:0;color:var(--color-white);text-align:center;padding:8px;border-radius:var(--radius);cursor:pointer;font-weight:700;font-size:0.95rem}
+  .season-toggle{display:flex;align-items:center;justify-content:space-between;padding:8px;background:var(--primary);color:var(--color-white);border-radius:var(--radius);margin:6px 0;cursor:pointer;font-weight:700}
   .season-content{padding-left:6px;padding-right:6px;margin-bottom:6px}
 
   .video-container{display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;padding:6px;box-sizing:border-box}
   .video-container video{ width:100%; object-fit:contain; display:block; }
   .plyr {
-    --plyr-color-main: #007bff;
-    --plyr-video-controls-background: rgba(0, 0, 0, 0.7);
-    border-radius: 8px;
+    --plyr-color-main: var(--primary);
+    --plyr-video-controls-background: var(--overlay-video);
+    border-radius: var(--radius);
     width: 100%;
   }
   .plyr__video-wrapper {
     width: 100%;
   }
   .plyr--fullscreen {
-    background: #000;
+    background: var(--color-black);
   }
   .plyr--fullscreen video {
     max-height: 100% !important;
@@ -117,10 +157,12 @@
       display: none !important;
     }
   }
-  .video-title{font-weight:700;color:#fff;margin-bottom:6px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%}
+  .video-title{font-weight:700;color:var(--color-white);margin-bottom:6px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%}
+  body.dark .back-btn { background: var(--white-alpha-12); color: var(--color-white); }
+  body.dark .view-btn.active { border-color: var(--primary); }
 </style>
 </head>
-<body>
+<body data-page="shows">
   <header>
     <h1>Shows</h1>
     <a class="back-btn" href="http://192.168.4.1/menu">← Back to Menu</a>
@@ -228,7 +270,7 @@ function applyThemeFlag(dark){
 
     // Header and toolbar surfaces
     const header = document.querySelector('header');
-    if(header) header.style.background = dark ? '#07142a' : 'var(--primary)';
+    if(header) header.style.background = '';
     const toolbar = document.querySelector('.toolbar');
     if(toolbar){
       toolbar.style.background = dark ? '#0d1722' : 'var(--bg)';
@@ -1372,6 +1414,7 @@ function openVideo(src, useResume=false, ep=null){
 
   if (!window.plyrInstance) {
     window.plyrInstance = new Plyr(videoPlayer, {
+      iconUrl: 'assets/plyr.svg',
       controls: [
         'play-large',
         'play',
@@ -1829,4 +1872,6 @@ sortSelect.addEventListener('change', () => applySort(sortSelect.value));
 
 </body>
 </html>
+
+
 

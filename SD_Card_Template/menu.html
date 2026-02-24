@@ -7,36 +7,69 @@
 <meta name="description" content="Jcorp Nomad — Menu" />
 <title>Jcorp Nomad</title>
 <link rel="icon" href="/favicon.ico" />
+<link rel="stylesheet" href="/master.css">
+<script>
+(function() {
+  try {
+    const isDark = localStorage.getItem('nomad_dark_mode') === 'true';
+    if (isDark) document.documentElement.classList.add('dark');
+
+    const saved = localStorage.getItem('nomad_custom_theme');
+    if (saved) {
+      const colors = JSON.parse(saved);
+      const style = document.createElement('style');
+      style.id = 'custom-theme-style';
+      style.textContent = `
+        :root {
+          --primary: ${colors.primary} !important;
+          --primary-dark: ${colors.primaryDark} !important;
+          --bg: ${colors.bgLight} !important;
+          --card: ${colors.cardLight} !important;
+          --card-bg: ${colors.cardLight} !important;
+          --text: ${colors.textLight} !important;
+          --muted: ${colors.mutedLight} !important;
+        }
+        body.dark {
+          --bg: ${colors.bgDark} !important;
+          --card: ${colors.cardDark} !important;
+          --card-bg: ${colors.cardDark} !important;
+          --text: ${colors.textDark} !important;
+          --muted: ${colors.mutedDark} !important;
+          --primary: ${colors.primaryDarkTheme} !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  } catch(e) {}
+})();
+</script>
+<script src="/theme-manager.js"></script>
 <style>
-  :root{
-    --primary:#007bff;
-    --primary-dark:#0056b3;
-    --bg:#f4f4f9;
-    --card:#ffffff;
-    --muted:#6b7280;
-    --text:#0b1220;
-    --line:rgba(11,18,32,0.06);
-    --radius:10px;
+  /* Menu-specific functional CSS layout and search functionality */
+  :root {
     --header-height:64px;
     --page-max:1400px;
   }
 
-  body.dark{
-    --bg:#071226;
-    --card:#071722;
-    --muted:#93a9c6;
-    --text:#eaf6ff;
-    --line:rgba(255,255,255,0.04);
-    --primary:#4aa3ff;
-    --primary-dark:#2f84ff;
+  html,body {
+    height:100%;
+    margin:0;
+    -webkit-font-smoothing:antialiased;
+  }
+  body {
+    display:flex;
+    flex-direction:column;
   }
 
-  html,body{height:100%;margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
-  body { display:flex; flex-direction:column; }
-  a{color:inherit;text-decoration:none}
-
-  /* full-page background layer to avoid mobile variable bleed / white gaps, its still a bit broken (WIP) */
-  .page-bg { position:fixed; inset:0; background:var(--bg); z-index:0; pointer-events:none; transition:background .18s linear; }
+  /* full-page background layer to avoid mobile variable bleed / white gaps */
+  .page-bg {
+    position:fixed;
+    inset:0;
+    background:var(--bg);
+    z-index:0;
+    pointer-events:none;
+    transition:background .18s linear;
+  }
 
   /* Header */
   header {
@@ -46,84 +79,234 @@
     justify-content:space-between;
     padding:10px 14px;
     border-bottom:1px solid var(--line);
-    position:sticky; top:0;
+    position:sticky;
+    top:0;
     background:var(--primary);
     color:#fff;
     z-index:80;
-    backdrop-filter: blur(6px);
+    backdrop-filter:blur(6px);
     height:var(--header-height);
     box-sizing:border-box;
   }
-  .brand { display:flex;align-items:center;gap:12px; min-width:0; }
-  .logo { display:flex;align-items:center;justify-content:center;padding:4px;height:48px;min-width:48px;border-radius:10px;overflow:hidden;background:rgba(255,255,255,0.06);box-shadow:0 6px 18px rgba(0,0,0,0.06);flex-shrink:0; }
-  .logo img{ display:block; max-height:40px; max-width:180px; object-fit:contain; pointer-events:none; user-select:none; }
-  .title { font-weight:800; font-size:1.06rem; line-height:1; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .header-space { display:flex; align-items:center; gap:8px; margin-left:auto; }
 
-  .icon-btn { width:44px;height:44px;border-radius:11px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.06);display:inline-grid;place-items:center;cursor:pointer;color:#fff; transition:transform .12s, box-shadow .12s, opacity .12s; font-size:16px; }
-  .icon-btn:active{ transform:translateY(1px); }
-  .admin-btn { width:38px;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.06); color:#fff; display:inline-grid; place-items:center; cursor:pointer; }
+  .brand {
+    display:flex;
+    align-items:center;
+    gap:12px;
+    min-width:0;
+  }
+
+  .logo {
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:4px;
+    height:48px;
+    min-width:48px;
+    border-radius:var(--radius);
+    overflow:hidden;
+    background:rgba(255,255,255,0.06);
+    box-shadow:var(--shadow);
+    flex-shrink:0;
+  }
+
+  .logo img {
+    display:block;
+    max-height:40px;
+    max-width:180px;
+    object-fit:contain;
+    pointer-events:none;
+    user-select:none;
+  }
+
+  .title {
+    font-weight:800;
+    font-size:1.06rem;
+    line-height:1;
+    color:#fff;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+
+  .header-space {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-left:auto;
+  }
+
+  .icon-btn {
+    width:44px;
+    height:44px;
+    border-radius:11px;
+    border:1px solid rgba(255,255,255,0.08);
+    background:rgba(255,255,255,0.06);
+    display:inline-grid;
+    place-items:center;
+    cursor:pointer;
+    color:#fff;
+    transition:transform .12s, box-shadow .12s, opacity .12s;
+    font-size:16px;
+  }
+
+  .icon-btn:active {
+    transform:translateY(1px);
+  }
+
+  .admin-btn {
+    width:38px;
+    height:38px;
+    border-radius:var(--radius);
+    border:1px solid rgba(255,255,255,0.08);
+    background:rgba(255,255,255,0.06);
+    color:#fff;
+    display:inline-grid;
+    place-items:center;
+    cursor:pointer;
+  }
 
   /* Main layout */
-  main{
+  main {
     max-width:var(--page-max);
     margin:18px auto;
     padding:12px 20px;
     position:relative;
     display:flex;
     flex-direction:column;
-    min-height: calc(100vh - var(--header-height) - 36px);
+    min-height:calc(100vh - var(--header-height) - 36px);
     box-sizing:border-box;
     z-index:1;
     align-items:center;
   }
-  .content-area { flex: 1 1 auto; display:flex; flex-direction:column; gap:12px; width:100%; align-items:center; }
-  .welcome-center { text-align:center; margin-bottom:6px; width:100%; }
-  .welcome-center h1 { margin:0; font-size:1.4rem; font-weight:900; letter-spacing:-0.3px; color:var(--text); }
-  .welcome-center p { margin:6px 0 0; color:var(--muted); font-size:1rem; }
+
+  .content-area {
+    flex:1 1 auto;
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+    width:100%;
+    align-items:center;
+  }
+
+  .welcome-center {
+    text-align:center;
+    margin-bottom:6px;
+    width:100%;
+  }
+
+  .welcome-center h1 {
+    margin:0;
+    font-size:1.4rem;
+    font-weight:900;
+    letter-spacing:-0.3px;
+    color:var(--text);
+  }
+
+  .welcome-center p {
+    margin:6px 0 0;
+    color:var(--muted);
+    font-size:1rem;
+  }
 
   /* Search row */
-  .search-row { display:flex; flex-direction:column; align-items:center; gap:8px; margin:8px 0 14px; justify-content:center; width:100%; }
-  .search-input {
-    width:100%; max-width:980px; padding:14px 16px; border-radius:12px; border:1px solid var(--line);
-    background:var(--card); color:var(--text); font-weight:600; font-size:1rem;
-    box-shadow:0 10px 28px rgba(9,18,37,0.05);
+  .search-row {
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:8px;
+    margin:8px 0 14px;
+    justify-content:center;
+    width:100%;
   }
-  .search-input::placeholder{ color: var(--muted); }
+
+  .search-input {
+    width:100%;
+    max-width:980px;
+    padding:14px 16px;
+    border-radius:var(--radius);
+    border:1px solid var(--line);
+    background:var(--card-bg);
+    color:var(--text);
+    font-weight:600;
+    font-size:1rem;
+    box-shadow:var(--shadow);
+  }
+
+  .search-input::placeholder {
+    color:var(--muted);
+  }
 
   /* loader under input for feedback */
-  .search-loader { width:100%; max-width:980px; height:8px; border-radius:6px; overflow:hidden; background:linear-gradient(90deg, rgba(15,111,255,0.06), rgba(11,87,208,0.03)); display:none; }
-  .search-loader .bar { position:relative; left:-40%; width:36%; height:100%; background:linear-gradient(90deg,var(--primary),var(--primary-dark)); animation: slide 1100ms linear infinite; }
-  @keyframes slide { to { left:140%; } }
+  .search-loader {
+    width:100%;
+    max-width:980px;
+    height:8px;
+    border-radius:6px;
+    overflow:hidden;
+    background:linear-gradient(90deg, var(--primary-alpha-10), var(--primary-alpha-5));
+    display:none;
+  }
 
-  /* tiles - use auto-fit grid so partial bottom rows are centered */
-  .grid-wrap { margin-top:8px; padding:14px; border-radius:14px; border:1px solid var(--line); background:linear-gradient(180deg,transparent, rgba(0,0,0,0.01)); width:100%; box-sizing:border-box; }
+  .search-loader .bar {
+    position:relative;
+    left:-40%;
+    width:36%;
+    height:100%;
+    background:linear-gradient(90deg, var(--primary), var(--primary-dark));
+    animation:slide 1100ms linear infinite;
+  }
 
+  @keyframes slide {
+    to {
+      left:140%;
+    }
+  }
+
+  /* tiles - use flex grid so partial bottom rows are centered */
+  .grid-wrap {
+    margin-top:8px;
+    padding:14px;
+    border-radius:14px;
+    border:1px solid var(--line);
+    background:linear-gradient(180deg, transparent, rgba(0,0,0,0.01));
+    width:100%;
+    box-sizing:border-box;
+  }
+
+  .grid {
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:center;
+    gap:12px;
+    max-width:760px;
+    margin:12px auto 0;
+    align-items:stretch;
+  }
+
+  @media (min-width:1100px) {
     .grid {
-      display:flex;
-      flex-wrap:wrap;
-      justify-content:center; /* center incomplete last row */
-      gap:12px;
-      max-width:760px;
-      margin:12px auto 0;
-      align-items:stretch;
+      max-width:1200px;
     }
+  }
 
-    @media (min-width:1100px){
-      .grid { grid-template-columns: repeat(auto-fit, minmax(200px, 240px)); max-width:1200px; }
+  @media (max-width:900px) {
+    .tile {
+      flex:0 0 calc(50% - 8px);
+      max-width:360px;
     }
+  }
 
-    /* keep 2-up layout for medium screens, but make mobile use full width */
-    @media (max-width:900px){
-      .tile { flex: 0 0 calc(50% - 8px); max-width:360px; }
+  @media (max-width:480px) {
+    .tile {
+      flex:0 0 100%;
+      max-width:none;
     }
-    @media (max-width:480px){
-      .tile { flex: 0 0 100%; max-width:none; }
-    }
+  }
+
   .tile {
-    /* keep visual style but allow flex sizing */
-    background:var(--card);
-    border-radius:10px;
+    background:var(--card-bg);
+    border-radius:var(--radius);
     padding:14px;
     display:flex;
     align-items:center;
@@ -134,53 +317,145 @@
     transition:transform .12s, box-shadow .12s;
     min-height:60px;
     color:var(--text);
-
-    /* sizing for desktop: three across ideally */
-    flex: 0 0 calc(33.333% - 8px); /* 3 columns with gap compensation */
-    max-width:260px;
+    flex:0 0 calc(33.333% - 8px);
+    max-width:none;
     box-sizing:border-box;
   }
-  .tile:active{ transform:translateY(1px); }
-  .tile .label { font-size:1rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 6px; text-align:center; width:100%; }
 
-  
+  .tile:active {
+    transform:translateY(1px);
+  }
+
+  .tile .label {
+    font-size:1rem;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    padding:0 6px;
+    text-align:center;
+    width:100%;
+  }
+
   /* search results panel */
   #resultsPanel {
-    position:absolute; left:50%; transform:translateX(-50%); top:150px; width: min(1200px, calc(100% - 36px)); z-index:220; display:none;
-    background:var(--card); border-radius:12px; box-shadow:0 28px 70px rgba(2,6,23,0.16); border:1px solid var(--line); max-height:62vh; overflow:auto;
+    position:absolute;
+    left:50%;
+    transform:translateX(-50%);
+    top:150px;
+    width:min(1200px, calc(100% - 36px));
+    z-index:220;
+    display:none;
+    background:var(--card-bg);
+    border-radius:var(--radius);
+    box-shadow:var(--shadow-large);
+    border:1px solid var(--line);
+    max-height:62vh;
+    overflow:auto;
   }
-  .result-row { display:flex; align-items:center; gap:14px; padding:12px 14px; border-bottom:1px solid var(--line); cursor:pointer; color:var(--text); }
-  .result-row:last-child{ border-bottom:0; }
-  .thumb { border-radius:8px; background:linear-gradient(180deg, rgba(0,0,0,0.03), transparent); display:grid; place-items:center; color:var(--muted); font-weight:700; overflow:hidden; flex:0 0 auto; }
-  .thumb img{ display:block; width:100%; height:100%; object-fit:cover; }
 
-  .thumb.rect { width:72px; height:108px; border-radius:8px; }
-  .thumb.square { width:56px; height:56px; border-radius:8px; }
+  .result-row {
+    display:flex;
+    align-items:center;
+    gap:14px;
+    padding:12px 14px;
+    border-bottom:1px solid var(--line);
+    cursor:pointer;
+    color:var(--text);
+    transition: background 0.15s ease;
+  }
 
-  .meta { display:flex; flex-direction:column; gap:6px; min-width:0; margin-right:8px; }
-  .title { font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:48ch; color:var(--text); }
-  .sub { color:var(--muted); font-size:0.95rem; }
+  .result-row:hover {
+    background: var(--primary-alpha-5);
+  }
 
-  .result-path { margin-left:auto; font-weight:700; color:var(--muted); font-size:0.95rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:40ch; }
+  .result-row:last-child {
+    border-bottom:0;
+  }
 
-  /* Resume panel - fixed sizing and centered rows; never scroll */
+  .thumb {
+    border-radius:8px;
+    background:linear-gradient(180deg, rgba(0,0,0,0.03), transparent);
+    display:grid;
+    place-items:center;
+    color:var(--muted);
+    font-weight:700;
+    overflow:hidden;
+    flex:0 0 auto;
+  }
+
+  .thumb img {
+    display:block;
+    width:100%;
+    height:100%;
+    object-fit:cover;
+  }
+
+  .thumb.rect {
+    width:72px;
+    height:108px;
+    border-radius:8px;
+  }
+
+  .thumb.square {
+    width:56px;
+    height:56px;
+    border-radius:8px;
+  }
+
+  .meta {
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    min-width:0;
+    margin-right:8px;
+  }
+
+  .title {
+    font-weight:800;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    max-width:48ch;
+    color:var(--text);
+  }
+
+  .sub {
+    color:var(--muted);
+    font-size:0.95rem;
+  }
+
+  .result-path {
+    margin-left:auto;
+    font-weight:700;
+    color:var(--muted);
+    font-size:0.95rem;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    max-width:40ch;
+  }
+
+  /* Resume panel - fixed sizing and centered rows */
   #resumePanel {
     margin-top:16px;
     max-width:760px;
     margin-left:auto;
     margin-right:auto;
-    background:var(--card);
-    border-radius:12px;
+    background:var(--card-bg);
+    border-radius:var(--radius);
     border:1px solid var(--line);
     padding:12px;
-    box-shadow:0 12px 30px rgba(2,6,23,0.06);
+    box-shadow:var(--shadow-md);
     text-align:center;
-    overflow:visible; /* avoid internal scrollbars */
+    overflow:visible;
   }
-  #resumePanel h3 { margin:0 0 8px; font-size:1rem; color:var(--text); }
 
-  /* layout as two stacked rows (Movies, Shows). Center each row.
-     Each row will contain up to 3 fixed-size items to avoid overflow/scroll.(WIP > Need to make this just a row not stacked) */
+  #resumePanel h3 {
+    margin:0 0 8px;
+    font-size:1rem;
+    color:var(--text);
+  }
+
   .resume-list {
     display:flex;
     flex-direction:column;
@@ -196,7 +471,7 @@
     gap:12px;
     align-items:center;
     justify-content:center;
-    flex-wrap:nowrap; /* fixed number of items, we slice in JS */
+    flex-wrap:nowrap;
   }
 
   /* Fixed-size resume cards (desktop) */
@@ -215,147 +490,253 @@
     justify-content:center;
     box-sizing:border-box;
   }
+
   /* Resume episode title styling */
-.resume-episode-title {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: 28px; /* Above the time overlay */
-  background: rgba(0,0,0,0.75);
-  color: #fff;
-  padding: 4px 8px;
-  border-radius: 12px;
-  font-weight: 600;
-  font-size: 10px;
-  z-index: 3;
-  max-width: 90%;
-  overflow: hidden;
-  white-space: nowrap;
-}
+  .resume-episode-title {
+    position:absolute;
+    left:50%;
+    transform:translateX(-50%);
+    bottom:28px;
+    background:rgba(0,0,0,0.75);
+    color:#fff;
+    padding:4px 8px;
+    border-radius:12px;
+    font-weight:600;
+    font-size:10px;
+    z-index:3;
+    max-width:90%;
+    overflow:hidden;
+    white-space:nowrap;
+  }
 
-.resume-episode-title .marquee {
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  position: relative;
-  height: 14px;
-  width: 100%;
-}
+  .resume-episode-title .marquee {
+    display:block;
+    white-space:nowrap;
+    overflow:hidden;
+    position:relative;
+    height:14px;
+    width:100%;
+  }
 
-.resume-episode-title .m-inner {
-  display: inline-block;
-  white-space: nowrap;
-  will-change: transform;
-}
+  .resume-episode-title .m-inner {
+    display:inline-block;
+    white-space:nowrap;
+    will-change:transform;
+  }
 
-.resume-episode-title .m-inner span {
-  display: inline-block;
-  white-space: nowrap;
-}
-  .resume-thumb { width:100%; height:100%; display:block; position:relative; }
-  .resume-thumb img{ width:100%; height:100%; object-fit:cover; display:block; }
-  .fallback-text { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:2; text-align:center; font-weight:700; color:var(--text); padding:8px; background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent); }
-  .resume-overlay { position:absolute; left:50%; transform:translateX(-50%); bottom:8px; background:rgba(0,0,0,0.6); color:#fff; padding:6px 10px; border-radius:999px; font-weight:700; font-size:12px; z-index:4; min-width:40px; text-align:center; overflow:hidden; }
-  .resume-overlay.small{ font-size:11px; padding:4px 8px; background:rgba(0,0,0,0.55); }
-@media (max-width:640px){
-  /* header tweaks */
-  header { padding:8px 10px; }
-  .logo { height:36px; min-width:36px; }
-  .logo img{ max-height:28px; }
+  .resume-episode-title .m-inner span {
+    display:inline-block;
+    white-space:nowrap;
+  }
 
-  /* Hide the textual title on small screens so buttons don't overlap it */
-  .brand .title { display:none !important; }
+  .resume-thumb {
+    width:100%;
+    height:100%;
+    display:block;
+    position:relative;
+  }
 
-  /* header buttons keep the larger touch size */
-  .icon-btn {
-    width:88px;      
-    height:48px;
-    border-radius:10px;
-    font-size:18px;
-    padding:0 10px;
-    justify-content:center;
+  .resume-thumb img {
+    width:100%;
+    height:100%;
+    object-fit:cover;
+    display:block;
+  }
+
+  .fallback-text {
+    position:absolute;
+    inset:0;
+    display:flex;
     align-items:center;
-    display:inline-flex;
-    gap:6px;
-  }
-  .admin-btn {
-    width:76px;
-    height:44px;
-    border-radius:10px;
-    display:inline-flex;
     justify-content:center;
-    align-items:center;
-    padding:0 8px;
-  }
-  .header-space { gap:10px; }
-
-  /* Make the tile container use more of the screen and stretch tiles full width */
-  .grid { 
-    max-width: calc(100% - 28px); /* allow the grid to span the viewport with small side margin */
-    margin:12px 14px 0;
-    justify-content:stretch;      /* let tiles fill the row */
-    gap:12px;
+    z-index:2;
+    text-align:center;
+    font-weight:700;
+    color:var(--text);
+    padding:8px;
+    background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);
   }
 
-  /* Make tiles full-width on mobile so buttons are big and easy to tap */
-  .tile {
-    flex: 0 0 100%;
-    max-width: none;
-    min-height:70px;   /* slightly taller for touch */
-    padding:16px;      /* more internal padding for the larger area */
-    font-size:1.05rem; /* slightly larger label text */
-    box-sizing:border-box;
+  .resume-overlay {
+    position:absolute;
+    left:50%;
+    transform:translateX(-50%);
+    bottom:8px;
+    background:rgba(0,0,0,0.6);
+    color:#fff;
+    padding:6px 10px;
+    border-radius:999px;
+    font-weight:700;
+    font-size:12px;
+    z-index:4;
+    min-width:40px;
+    text-align:center;
+    overflow:hidden;
   }
 
-  /* Results/resume adjustments */
-  .welcome-center h1 { font-size:1.06rem; }
-  #resultsPanel { top:190px; left: 8px; transform:none; width: calc(100% - 16px); }
-  .resume-list { flex-direction:row; gap:8px; align-items:center; justify-content:center; }
-  .resume-section { flex-wrap:nowrap; }
-  .resume-item { width:48%; height:auto; aspect-ratio:2/3; min-width:0; }
-  .resume-overlay { font-size:11px; }
-}
+  .resume-overlay.small {
+    font-size:11px;
+    padding:4px 8px;
+    background:rgba(0,0,0,0.55);
+  }
+
+  @media (max-width:640px) {
+    /* header tweaks */
+    header {
+      padding:8px 10px;
+    }
+
+    .logo {
+      height:36px;
+      min-width:36px;
+    }
+
+    .logo img {
+      max-height:28px;
+    }
+
+    /* Hide the textual title on small screens */
+    .brand .title {
+      display:none !important;
+    }
+
+    /* header buttons keep the larger touch size */
+    .icon-btn {
+      width:88px;
+      height:48px;
+      border-radius:10px;
+      font-size:18px;
+      padding:0 10px;
+      justify-content:center;
+      align-items:center;
+      display:inline-flex;
+      gap:6px;
+    }
+
+    .admin-btn {
+      width:76px;
+      height:44px;
+      border-radius:10px;
+      display:inline-flex;
+      justify-content:center;
+      align-items:center;
+      padding:0 8px;
+    }
+
+    .header-space {
+      gap:10px;
+    }
+
+    /* Make the tile container use more of the screen */
+    .grid {
+      max-width:calc(100% - 28px);
+      margin:12px 14px 0;
+      justify-content:stretch;
+      gap:12px;
+    }
+
+    /* Make tiles full-width on mobile */
+    .tile {
+      flex:0 0 100%;
+      max-width:none;
+      min-height:70px;
+      padding:16px;
+      font-size:1.05rem;
+      box-sizing:border-box;
+    }
+
+    /* Results/resume adjustments */
+    .welcome-center h1 {
+      font-size:1.06rem;
+    }
+
+    #resultsPanel {
+      top:190px;
+      left:8px;
+      transform:none;
+      width:calc(100% - 16px);
+    }
+
+    .resume-list {
+      flex-direction:row;
+      gap:8px;
+      align-items:center;
+      justify-content:center;
+    }
+
+    .resume-section {
+      flex-wrap:nowrap;
+    }
+
+    .resume-item {
+      width:48%;
+      height:auto;
+      aspect-ratio:2/3;
+      min-width:0;
+    }
+
+    .resume-overlay {
+      font-size:11px;
+    }
+  }
 
   /* marquee helper (used for scrolling episode names) */
-  .marquee{display:block;white-space:nowrap;overflow:hidden;position:relative;height:20px; max-width:100%;}
-  .m-inner{display:inline-block;white-space:nowrap; will-change:transform}
-  .m-inner span{display:inline-block; white-space:nowrap;}
+  .marquee {
+    display:block;
+    white-space:nowrap;
+    overflow:hidden;
+    position:relative;
+    height:20px;
+    max-width:100%;
+  }
+
+  .m-inner {
+    display:inline-block;
+    white-space:nowrap;
+    will-change:transform;
+  }
+
+  .m-inner span {
+    display:inline-block;
+    white-space:nowrap;
+  }
+
   /* Remove button for resume items */
-.resume-remove {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 20px;
-  height: 20px;
-  background: rgba(255, 0, 0, 0.8);
-  color: white;
-  border: none;
-  border-radius: 50%;
-  font-size: 12px;
-  font-weight: bold;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10;
-  opacity: 0;
-  transition: opacity 0.2s, transform 0.2s;
-  transform: scale(0.8);
-}
+  .resume-remove {
+    position:absolute;
+    top:4px;
+    right:4px;
+    width:20px;
+    height:20px;
+    background:rgba(255, 0, 0, 0.8);
+    color:#fff;
+    border:none;
+    border-radius:50%;
+    font-size:12px;
+    font-weight:bold;
+    cursor:pointer;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    z-index:10;
+    opacity:0;
+    transition:opacity 0.2s, transform 0.2s;
+    transform:scale(0.8);
+  }
 
-.resume-item:hover .resume-remove {
-  opacity: 1;
-  transform: scale(1);
-}
+  .resume-item:hover .resume-remove {
+    opacity:1;
+    transform:scale(1);
+  }
 
-.resume-remove:hover {
-  background: rgba(255, 0, 0, 1);
-  transform: scale(1.1);
-}
+  .resume-remove:hover {
+    background:rgba(255, 0, 0, 1);
+    transform:scale(1.1);
+  }
 
-.resume-remove:active {
-  transform: scale(0.95);
-}
+  .resume-remove:active {
+    transform:scale(0.95);
+  }
 </style>
 </head>
 <body>
@@ -1863,3 +2244,5 @@ if (!DISABLE_ZIM) {
 </script>
 </body>
 </html>
+
+

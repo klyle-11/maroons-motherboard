@@ -2,6 +2,42 @@
 <!-- Version 2.4 -->
 <html lang="en">
 <head>
+    <link rel="stylesheet" href="/master.css">
+    <script>
+(function() {
+  try {
+    const isDark = localStorage.getItem('nomad_dark_mode') === 'true';
+    if (isDark) document.documentElement.classList.add('dark');
+
+    const saved = localStorage.getItem('nomad_custom_theme');
+    if (saved) {
+      const colors = JSON.parse(saved);
+      const style = document.createElement('style');
+      style.id = 'custom-theme-style';
+      style.textContent = `
+        :root {
+          --primary: ${colors.primary} !important;
+          --primary-dark: ${colors.primaryDark} !important;
+          --bg: ${colors.bgLight} !important;
+          --card: ${colors.cardLight} !important;
+          --card-bg: ${colors.cardLight} !important;
+          --text: ${colors.textLight} !important;
+          --muted: ${colors.mutedLight} !important;
+        }
+        body.dark {
+          --bg: ${colors.bgDark} !important;
+          --card: ${colors.cardDark} !important;
+          --card-bg: ${colors.cardDark} !important;
+          --text: ${colors.textDark} !important;
+          --muted: ${colors.mutedDark} !important;
+          --primary: ${colors.primaryDarkTheme} !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  } catch(e) {}
+})();
+</script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Nomad • Books</title>
@@ -31,18 +67,6 @@
         console.log('Startup: zip.js present?', !!window.zip, 'JSZip present?', !!window.JSZip);
     </script>
     <style>
-        :root {
-            --primary: #007bff;
-            --primary-dark: #0056b3;
-            --bg: #f4f4f9;
-            --text: #333;
-            --muted: #6b7280;
-            --radius: 8px;
-            --shadow: 0 4px 12px rgba(0,0,0,0.08);
-            --audio-height: 0px;
-            --reader-sidebar-width: 320px;
-        }
-
         *, *::before, *::after {
             box-sizing: border-box;
             margin: 0;
@@ -63,77 +87,68 @@
         }
 
             body.dark {
-                background: #0f1720;
-                color: #e6eef8;
+                background: var(--bg);
+                color: var(--text);
             }
 
-                body.dark header {
-                    background: #07142a;
-                    color: #e6eef8;
-                }
-
                 body.dark .toolbar {
-                    background: #0b1220;
-                    border-bottom-color: rgba(255,255,255,0.04);
+                    background: var(--bg);
+                    border-bottom-color: var(--white-alpha-4);
                 }
 
                 body.dark .media-card {
-                    background: #0b1220;
-                    box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+                    background: var(--card);
+                    box-shadow: var(--shadow-medium);
                 }
+                body.dark .back-btn { background: var(--white-alpha-12); color: var(--color-white); }
+                body.dark .view-btn.active { border-color: var(--primary); }
 
                 body.dark .overlay-title {
-                    color: #e6eef8;
+                    color: var(--text);
                 }
 
                 body.dark .modal-content, body.dark .list-modal-content {
-                    background: #0b1220;
-                    color: #e6eef8;
+                    background: var(--card);
+                    color: var(--text);
                 }
 
                 body.dark .reader-container {
-                    background: #0b1220;
-                    color: #e6eef8;
+                    background: var(--card);
+                    color: var(--text);
                 }
 
                 body.dark .reader-header {
-                    background: #07142a;
+                    background: var(--card);
                 }
 
                 body.dark .reader-navigation {
-                    background: #0b1220;
-                    border-top-color: rgba(255,255,255,0.04);
+                    background: var(--card);
+                    border-top-color: var(--white-alpha-4);
                 }
 
                 body.dark .toc-panel {
-                    background: #081224;
-                    border-left: 1px solid rgba(255,255,255,0.06);
+                    background: var(--card);
+                    border-left: 1px solid var(--white-alpha-6);
                 }
 
                 body.dark .audio-player {
-                    background: rgba(11,18,32,0.98);
-                    border-top-color: rgba(255,255,255,0.08);
+                    background: var(--card);
+                    backdrop-filter: blur(10px);
+                    border-top-color: var(--white-alpha-8);
                 }
 
                 body.dark .progress-bar-container {
-                    background: #2d3748;
+                    background: var(--progress-dark);
                 }
 
                 body.dark .time-info {
-                    color: #a0aec0;
+                    color: var(--time-dark);
                 }
 
         header {
-            background: var(--primary);
-            color: #fff;
-            padding: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
             position: sticky;
             top: 0;
             z-index: 60;
-            box-shadow: var(--shadow)
         }
 
             header h1 {
@@ -152,29 +167,32 @@
 
         .toolbar {
             background: var(--bg);
-            padding: .75rem 1rem;
+            padding: .65rem 1rem;
             display: flex;
-            flex-wrap: wrap;
-            gap: .75rem;
+            flex-wrap: nowrap;
+            gap: .6rem;
             align-items: center;
-            border-bottom: 1px solid #ddd;
+            border-bottom: 1px solid var(--line);
             position: sticky;
-            top: 80px;
+            top: var(--header-height);
             z-index: 55;
-        }
+            }
 
             .toolbar input[type="search"] {
-                flex: 1 1 200px;
-                padding: .5rem .75rem;
-                border: 1px solid #ccc;
-                border-radius: var(--radius);
-                font-size: 0.95rem;
+            flex: 1;
+            padding: .5rem .75rem;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            font-size: 0.95rem;
+            background: var(--card);
+            color: var(--text);
             }
 
             .toolbar select, .toolbar .view-btn {
-                padding: .5rem .75rem;
-                border: 1px solid #ccc;
-                background: #fff;
+                padding: .48rem .7rem;
+                border: 1px solid var(--line);
+                background: var(--card);
+                color: var(--text);
                 border-radius: var(--radius);
                 font-size: 0.9rem;
                 cursor: pointer;
@@ -220,31 +238,38 @@
                 grid-template-columns: repeat(auto-fit,minmax(220px,1fr));
             }
 
-        @media (max-width:600px) {
-            header {
-                flex-direction: column;
-                gap: .5rem;
-            }
+        .media-card {
+            background: #fff;
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: transform .25s ease;
+            cursor: pointer;
+        }
 
-            .back-btn {
-                width: 100%;
-                text-align: center;
-            }
+        .media-card:hover {
+            transform: translateY(-4px);
+        }
 
-            .toolbar {
-                top: 112px;
+        @media (max-width: 768px) {
+            .media-grid.medium {
+                grid-template-columns: repeat(3, 1fr);
             }
+        }
 
+        @media (max-width: 600px) {
             .media-grid.small {
-                grid-template-columns: repeat(2,1fr);
+                grid-template-columns: repeat(2, 1fr);
             }
 
             .media-grid.medium {
-                grid-template-columns: repeat(3,1fr);
+                grid-template-columns: repeat(3, 1fr);
             }
 
             .media-grid.large {
-                grid-template-columns: repeat(4,1fr);
+                grid-template-columns: repeat(4, 1fr);
             }
         }
 
@@ -271,7 +296,7 @@
         }
 
         .media-grid.large .media-card {
-           max-width: 220px;
+            max-width: 220px;
         }
 
         .media-card.is-directory .thumb-wrapper {
@@ -982,6 +1007,7 @@
             }
         }
     </style>
+    <script src="theme-manager.js"></script>
 </head>
 <body>
     <header>
@@ -990,7 +1016,7 @@
     </header>
 
     <div class="toolbar">
-        <input id="searchInput" class="search-input" type="search" placeholder="Search books…" aria-label="Search books">
+        <input id="searchInput" type="search" placeholder="Search books…" aria-label="Search books">
         <select id="sortSelect" aria-label="Sort books">
             <option value="nameAsc">A → Z</option>
             <option value="nameDesc">Z → A</option>
@@ -2466,3 +2492,5 @@
     </script>
 </body>
 </html>
+
+

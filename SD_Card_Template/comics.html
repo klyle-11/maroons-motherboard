@@ -1,6 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="stylesheet" href="/master.css">
+    <script>
+(function() {
+  try {
+    const isDark = localStorage.getItem('nomad_dark_mode') === 'true';
+    if (isDark) document.documentElement.classList.add('dark');
+
+    const saved = localStorage.getItem('nomad_custom_theme');
+    if (saved) {
+      const colors = JSON.parse(saved);
+      const style = document.createElement('style');
+      style.id = 'custom-theme-style';
+      style.textContent = `
+        :root {
+          --primary: ${colors.primary} !important;
+          --primary-dark: ${colors.primaryDark} !important;
+          --bg: ${colors.bgLight} !important;
+          --card: ${colors.cardLight} !important;
+          --card-bg: ${colors.cardLight} !important;
+          --text: ${colors.textLight} !important;
+          --muted: ${colors.mutedLight} !important;
+        }
+        body.dark {
+          --bg: ${colors.bgDark} !important;
+          --card: ${colors.cardDark} !important;
+          --card-bg: ${colors.cardDark} !important;
+          --text: ${colors.textDark} !important;
+          --muted: ${colors.mutedDark} !important;
+          --primary: ${colors.primaryDarkTheme} !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  } catch(e) {}
+})();
+</script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Comic Reader</title>
@@ -13,14 +49,14 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: #1a1a1a;
-            color: #fff;
+            background: var(--thumb-bg);
+            color: var(--color-white);
             overflow-x: hidden;
         }
 
         body.light {
-            background: #f5f5f5;
-            color: #000;
+            background: var(--bg);
+            color: var(--color-black);
         }
 
         #header {
@@ -28,18 +64,19 @@
             top: 0;
             left: 0;
             right: 0;
-            background: rgba(0, 0, 0, 0.9);
-            padding: 15px 20px;
+            background: var(--overlay-menu);
+            padding: 18px 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             z-index: 100;
             transition: transform 0.3s;
+            min-height: 70px;
         }
 
         body.light #header {
-            background: rgba(255, 255, 255, 0.95);
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            background: var(--white-alpha-95);
+            box-shadow: 0 2px 5px var(--black-alpha-10);
         }
 
         #header.hidden {
@@ -51,15 +88,24 @@
             font-weight: 600;
         }
 
-        #back-btn {
-            background: #2196F3;
-            color: white;
+        .back-btn {
+            background: var(--primary-dark);
+            color: var(--color-white);
             border: none;
             padding: 8px 16px;
-            border-radius: 5px;
+            border-radius: var(--radius);
             cursor: pointer;
             text-decoration: none;
             display: inline-block;
+            font-weight: 600;
+        }
+
+        .back-btn:hover {
+            background: var(--primary);
+        }
+
+        body.dark .back-btn {
+            background: var(--white-alpha-12);
         }
 
         #comic-container {
@@ -85,10 +131,11 @@
         #comic-container.dual-page {
             padding: 60px 20px 100px 20px;
             flex-direction: row;
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
             justify-content: center;
             align-items: flex-start;
             min-height: 100vh;
+            gap: 10px;
         }
 
         .comic-page {
@@ -119,22 +166,17 @@
             display: block;
         }
 
-        #comic-container.dual-page {
-            flex-direction: row;
-            justify-content: center;
-            gap: 10px;
-        }
-
         #comic-container.dual-page .comic-page {
             max-height: calc(100vh - 180px);
-            max-width: calc(50% - 20px);
+            height: auto;
             width: auto;
             object-fit: contain;
             display: none;
+            flex-shrink: 0;
         }
 
         #comic-container.dual-page .comic-page.active {
-            display: inline-block;
+            display: block;
         }
 
         #comic-container.dual-page.rtl {
@@ -195,23 +237,6 @@
 
         #controls {
             position: fixed;
-            display: flex;
-            gap: 15px;
-            align-items: center;
-            z-index: 100;
-            transition: transform 0.3s;
-        }
-
-        #controls.hidden {
-            transform: translate(-50%, 150%);
-        }
-
-        #controls.webtoon-mode {
-            display: none;
-        }
-
-        #controls {
-            position: fixed;
             bottom: 20px;
             left: 50%;
             transform: translateX(-50%);
@@ -234,6 +259,10 @@
             transform: translate(-50%, 150%);
         }
 
+        #controls.webtoon-mode {
+            display: none;
+        }
+
         button {
             background: #2196F3;
             color: white;
@@ -242,6 +271,7 @@
             border-radius: 5px;
             cursor: pointer;
             font-size: 14px;
+            transition: background 0.2s;
         }
 
         button:hover {
@@ -261,6 +291,7 @@
             padding: 8px 12px;
             border-radius: 5px;
             cursor: pointer;
+            font-size: 14px;
         }
 
         body.light select {
@@ -277,10 +308,59 @@
 
         #settings-btn {
             background: #666;
+            padding: 8px 16px;
         }
 
         #settings-btn:hover {
             background: #888;
+        }
+
+        .zoom-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            background: var(--overlay-menu);
+            padding: 8px 12px;
+            border-radius: var(--radius);
+        }
+
+        body.light .zoom-controls {
+            background: rgba(255, 255, 255, 0.95);
+        }
+
+        .zoom-controls button {
+            background: var(--primary);
+            color: var(--color-white);
+            border: none;
+            width: 32px;
+            height: 32px;
+            border-radius: var(--radius);
+            cursor: pointer;
+            font-size: 20px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s ease;
+        }
+
+        .zoom-controls button:hover {
+            background: var(--primary-dark);
+        }
+
+        body.dark .zoom-controls button {
+            background: var(--white-alpha-20);
+        }
+
+        body.dark .zoom-controls button:hover {
+            background: var(--white-alpha-30);
+        }
+
+        #zoom-level {
+            min-width: 50px;
+            text-align: center;
+            font-size: 14px;
+            font-weight: 500;
         }
 
         #settings-panel {
@@ -292,7 +372,8 @@
             border-radius: 8px;
             z-index: 99;
             display: none;
-            min-width: 250px;
+            min-width: 280px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
         }
 
         #settings-panel.visible {
@@ -302,17 +383,32 @@
         body.light #settings-panel {
             background: rgba(255, 255, 255, 0.98);
             border: 1px solid #ddd;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
         }
 
         .setting-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
+            margin-bottom: 16px;
         }
 
         .setting-row:last-child {
             margin-bottom: 0;
+        }
+
+        .setting-row label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #ccc;
+        }
+
+        body.light .setting-row label {
+            color: #555;
+        }
+
+        .setting-row select {
+            width: 100%;
+            padding: 8px 12px;
         }
 
         #direction-setting {
@@ -320,86 +416,7 @@
         }
 
         #direction-setting.visible {
-            display: flex;
-        }
-
-        .setting-row {
-            margin-bottom: 15px;
-        }
-
-        .setting-row label {
             display: block;
-            margin-bottom: 5px;
-            font-size: 14px;
-        }
-
-        .setting-row select,
-        .setting-row input {
-            width: 100%;
-        }
-
-        .keyboard-hint {
-            position: fixed;
-            bottom: 80px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.85);
-            padding: 15px 25px;
-            border-radius: 8px;
-            font-size: 14px;
-            z-index: 90;
-            opacity: 0;
-            animation: fadeInOut 4s ease-in-out;
-            pointer-events: none;
-            text-align: center;
-            line-height: 1.6;
-        }
-
-        body.light .keyboard-hint {
-            background: rgba(255, 255, 255, 0.95);
-            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-        }
-
-        @keyframes fadeInOut {
-            0%, 100% { opacity: 0; }
-            10%, 90% { opacity: 1; }
-        }
-
-        .keyboard-hint kbd {
-            background: #555;
-            padding: 2px 6px;
-        }
-
-        #loading {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 15px;
-            color: white;
-            font-size: 18px;
-            z-index: 1000;
-        }
-
-        .spinner {
-            width: 40px;
-            height: 40px;
-            border: 4px solid rgba(255, 255, 255, 0.3);
-            border-top-color: #2196F3;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-
-        body.light .spinner {
-            border-color: rgba(0, 0, 0, 0.1);
-            border-top-color: #2196F3;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
         }
 
         .keyboard-hint {
@@ -448,54 +465,29 @@
             background: #e0e0e0;
             color: #333;
         }
-
-        .setting-row {
-            margin: 12px 0;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .setting-row label {
-            margin-right: 10px;
-            font-weight: 500;
-        }
-
-        .setting-row select {
-            padding: 6px 10px;
-            border-radius: 4px;
-            border: 1px solid #666;
-            background: #444;
-            color: #fff;
-            cursor: pointer;
-            font-size: 14px;
-        }
-
-        body.light .setting-row select {
-            background: #fff;
-            color: #333;
-            border-color: #ccc;
-        }
-
-        .setting-row select:hover {
-            border-color: #888;
-        }
-
-        body.light .setting-row select:hover {
-            border-color: #999;
-        }
     </style>
+    <script src="theme-manager.js"></script>
 </head>
 <body>
+    <header>
+        <h1 id="comic-title">Comic Reader</h1>
+        <a class="back-btn" href="books.html">← Back</a>
+    </header>
+
     <div id="header">
-        <a href="books.html" id="back-btn">← Back</a>
-        <div id="comic-title">Comic Reader</div>
-        <button id="settings-btn" onclick="toggleSettings()">⚙️ Settings</button>
+        <div style="display: flex; gap: 15px; align-items: center; justify-content: center; width: 100%;">
+            <div class="zoom-controls">
+                <button id="zoom-out" title="Zoom Out (-)">−</button>
+                <span id="zoom-level">100%</span>
+                <button id="zoom-in" title="Zoom In (+)">+</button>
+            </div>
+            <button id="settings-btn" onclick="toggleSettings()">⚙️ Settings</button>
+        </div>
     </div>
 
     <div id="settings-panel">
         <div class="setting-row">
-            <label>Reading Mode:</label>
+            <label>Reading Mode</label>
             <select id="reading-mode" onchange="changeReadingMode()">
                 <option value="webtoon">Infinite Scroll</option>
                 <option value="single-page">Single Page</option>
@@ -503,19 +495,11 @@
             </select>
         </div>
         <div class="setting-row" id="direction-setting">
-            <label>Page Order:</label>
+            <label>Page Order</label>
             <select id="reading-direction" onchange="changeReadingDirection()">
                 <option value="ltr">Left to Right</option>
                 <option value="rtl">Right to Left (Manga)</option>
             </select>
-        </div>
-        <div class="setting-row">
-            <label>Theme:</label>
-            <select id="theme" onchange="changeTheme()">
-                <option value="dark">Dark</option>
-                <option value="light">Light</option>
-            </select>
-        </div>
         </div>
     </div>
 
@@ -542,6 +526,40 @@
         const PRELOAD_COUNT = 5;
         const INITIAL_LOAD_COUNT = 10;
         let comicImages = [];
+
+        let zoomLevel = 100;
+        const ZOOM_STEP = 10;
+        const MIN_ZOOM = 50;
+        const MAX_ZOOM = 200;
+
+        function updateZoom(delta) {
+            zoomLevel = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoomLevel + delta));
+            document.getElementById('zoom-level').textContent = zoomLevel + '%';
+
+            const container = document.getElementById('comic-container');
+            const images = container.querySelectorAll('.comic-page');
+            images.forEach(img => {
+                applyZoomToImage(img);
+            });
+        }
+
+        function applyZoomToImage(img) {
+            if (readingMode === 'single-page') {
+                const baseHeight = window.innerHeight - 180;
+                img.style.maxHeight = (baseHeight * zoomLevel / 100) + 'px';
+                img.style.height = 'auto';
+                img.style.width = 'auto';
+            } else if (readingMode === 'dual-page') {
+                const baseHeight = window.innerHeight - 180;
+                img.style.maxHeight = (baseHeight * zoomLevel / 100) + 'px';
+                img.style.height = 'auto';
+                img.style.width = 'auto';
+            } else {
+                img.style.width = zoomLevel + '%';
+                img.style.maxWidth = zoomLevel + '%';
+                img.style.height = 'auto';
+            }
+        }
 
         function normalizePath(p) {
             if (!p) return '/';
@@ -697,6 +715,7 @@
                 img.dataset.pageIndex = pageNum;
 
                 img.onload = () => {
+                    applyZoomToImage(img);
                     container.appendChild(img);
                     loadedPages++;
                     console.log(`Loaded page ${pageNum + 1}: ${imgData.name}`);
@@ -808,6 +827,11 @@
                 directionSetting.classList.add('visible');
                 controls.classList.remove('webtoon-mode');
             }
+
+            const images = container.querySelectorAll('.comic-page');
+            images.forEach(img => {
+                applyZoomToImage(img);
+            });
 
             currentPage = 0;
             updateVisiblePages();
@@ -1035,6 +1059,9 @@
             startAutoHideTimer();
         });
 
+        document.getElementById('zoom-in').addEventListener('click', () => updateZoom(ZOOM_STEP));
+        document.getElementById('zoom-out').addEventListener('click', () => updateZoom(-ZOOM_STEP));
+
         document.addEventListener('keydown', (e) => {
             if (e.key === 'ArrowRight' || e.key === ' ') {
                 e.preventDefault();
@@ -1048,6 +1075,16 @@
             } else if (e.key === 'f' || e.key === 'F') {
                 e.preventDefault();
                 toggleFullscreen();
+            } else if (e.key === '+' || e.key === '=') {
+                e.preventDefault();
+                updateZoom(ZOOM_STEP);
+            } else if (e.key === '-' || e.key === '_') {
+                e.preventDefault();
+                updateZoom(-ZOOM_STEP);
+            } else if (e.key === '0') {
+                e.preventDefault();
+                zoomLevel = 100;
+                updateZoom(0);
             }
         });
 

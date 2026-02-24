@@ -3,900 +3,226 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Nomad • Queue</title>
-
+<title>Queue</title>
+<link rel="stylesheet" href="master.css">
 <script>
-  (function(){
-    try {
-      const el = document.documentElement;
-      const dsTheme = el && el.dataset && el.dataset.theme;
-      const stored = localStorage.getItem('nomad_dark_mode');
-      const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-      const isDark = (dsTheme === 'dark') || (stored === 'true') || (!dsTheme && !stored && prefersDark);
-      if(isDark) el.classList.add('dark'); else el.classList.remove('dark');
-    } catch(e){}
-  })();
+(function() {
+  try {
+    const isDark = localStorage.getItem('nomad_dark_mode') === 'true';
+    if (isDark) document.documentElement.classList.add('dark');
+
+    const saved = localStorage.getItem('nomad_custom_theme');
+    if (saved) {
+      const colors = JSON.parse(saved);
+      const style = document.createElement('style');
+      style.id = 'custom-theme-style';
+      style.textContent = `
+        :root {
+          --primary: ${colors.primary} !important;
+          --primary-dark: ${colors.primaryDark} !important;
+          --bg: ${colors.bgLight} !important;
+          --card: ${colors.cardLight} !important;
+          --card-bg: ${colors.cardLight} !important;
+          --text: ${colors.textLight} !important;
+          --muted: ${colors.mutedLight} !important;
+        }
+        body.dark {
+          --bg: ${colors.bgDark} !important;
+          --card: ${colors.cardDark} !important;
+          --card-bg: ${colors.cardDark} !important;
+          --text: ${colors.textDark} !important;
+          --muted: ${colors.mutedDark} !important;
+          --primary: ${colors.primaryDarkTheme} !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  } catch(e) {}
+})();
 </script>
-
+<script src="theme-manager.js"></script>
 <style>
-  :root{
-    --primary:#007bff;
-    --primary-600:#0066d6;
-    --bg:#f4f4f9;
-    --card:#ffffff;
-    --text:#111827;
-    --muted:#6b7280;
-    --playing-bg:#0b63ff;
-    --playing-text:#fff;
-    --radius:10px;
-    --shadow:0 10px 30px rgba(10,12,20,0.06);
-    --player-h-desktop:110px;
-    --player-h-mobile:86px;
-    --header-text:#ffffff;
-  }
-
-  html.dark {
-    --primary:#0a84ff;
-    --primary-600:#0a74e0;
-    --bg:#071022;
-    --card:#081223;
-    --text:#e6eef8;
-    --muted:#9aa8bf;
-    --playing-bg:#0a84ff;
-    --playing-text:#fff;
-    --shadow:0 10px 30px rgba(0,0,0,0.6);
-    --header-text:#fff;
-  }
-
-  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-  html,body{height:100%}
-  body{font-family:Inter, Arial, Helvetica, sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column;min-height:100vh;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
-
-  header{
-    background:var(--primary);
-    color:var(--header-text);
-    padding:14px 18px;
-    display:flex;
-    align-items:center;
-    justify-content:space-between;
-    position:sticky;top:0;z-index:60;box-shadow:var(--shadow);
-  }
-  header h1{font-size:1.15rem;margin:0;font-weight:700}
-  .back-btn{background:rgba(255,255,255,0.12);color:#fff;padding:.45rem .7rem;border-radius:8px;text-decoration:none;font-weight:700}
-
-  .toolbar{
-    background:var(--card);
-    padding:.6rem 14px;
-    display:flex;
-    gap:.6rem;
-    align-items:center;
-    border-bottom:1px solid rgba(0,0,0,0.08);
-    position:sticky;top:64px;z-index:55;flex-wrap:wrap;
-    justify-content:space-between;
-    box-shadow:0 4px 12px rgba(10,12,20,0.08);
-  }
-  .btn{padding:.45rem .65rem;border-radius:8px;border:0;background:var(--card);box-shadow:0 2px 8px rgba(10,12,20,0.04);cursor:pointer;font-weight:700;color:var(--text);display:inline-flex;align-items:center;gap:6px}
-  .btn.ghost{background:transparent;box-shadow:none;border:1px solid rgba(0,0,0,0.04)}
-  .btn.danger{background:#ef4444;color:#fff}
-  .btn .icon{font-size:1.1rem;line-height:1}
-  .btn .label{white-space:nowrap}
-  .total-count{color:var(--muted);font-weight:700;white-space:nowrap;font-size:0.95rem}
-
-  .nav-buttons{display:flex;gap:8px}
-
-  main{flex:1;max-width:1200px;width:100%;margin:0 auto;padding:14px;padding-bottom:calc(var(--player-h-desktop) + 36px)}
-  
-  .section{background:var(--card);border-radius:12px;padding:16px;box-shadow:var(--shadow);margin-bottom:12px}
-  .section h2{font-size:1.1rem;margin:0 0 12px 0;color:var(--primary-600);font-weight:800}
-
-  .empty-state{padding:32px;text-align:center;color:var(--muted);font-weight:700}
-  .empty-state-icon{font-size:3rem;margin-bottom:12px;opacity:0.3}
-
-  .now-playing-card{
-    background:linear-gradient(135deg, var(--playing-bg), var(--primary-600));
-    color:var(--playing-text);
-    padding:20px;
-    border-radius:12px;
-    margin-bottom:16px;
-    box-shadow:0 12px 36px rgba(10,12,20,0.15);
-  }
-  .now-playing-card .label{font-size:0.85rem;opacity:0.85;margin-bottom:6px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase}
-  .now-playing-card .track-name{font-size:1.3rem;font-weight:800;margin-bottom:4px}
-  .now-playing-card .track-context{font-size:0.95rem;opacity:0.8;font-weight:600}
-
-  .queue-list{display:flex;flex-direction:column;gap:8px}
-  
-  .queue-item{
-    display:flex;
-    align-items:center;
-    gap:12px;
-    padding:12px;
-    border-radius:10px;
-    background:rgba(0,0,0,0.02);
-    border:1px solid rgba(0,0,0,0.04);
-    transition:all 0.2s ease;
-    flex-wrap:wrap;
-  }
-  .queue-item:hover{
-    background:rgba(0,123,255,0.04);
-    border-color:rgba(0,123,255,0.2);
-    transform:translateY(-2px);
-    box-shadow:0 4px 12px rgba(10,12,20,0.08);
-  }
-  .queue-item.current{
-    background:rgba(10,123,255,0.08);
-    border-color:var(--primary);
-    border-width:2px;
-  }
-
-  .queue-num{
-    font-weight:800;
-    color:var(--primary-600);
-    font-size:1.1rem;
-    min-width:32px;
-    text-align:center;
-  }
-  .queue-item.current .queue-num{
-    color:var(--playing-bg);
-  }
-
-  .queue-info{
-    flex:1;
-    min-width:0;
-  }
-  .queue-title{
-    font-weight:700;
-    color:var(--text);
-    white-space:nowrap;
-    overflow:hidden;
-    text-overflow:ellipsis;
-    margin-bottom:2px;
-  }
-  .queue-context{
-    font-size:0.85rem;
-    color:var(--muted);
-    font-weight:600;
-    white-space:nowrap;
-    overflow:hidden;
-    text-overflow:ellipsis;
-  }
-
-  .queue-actions{
-    display:flex;
-    gap:6px;
-    align-items:center;
-    flex-shrink:0;
-  }
-  .queue-action-btn{
-    width:36px;
-    height:36px;
-    border-radius:8px;
-    border:1px solid rgba(0,0,0,0.08);
-    background:var(--card);
-    color:var(--primary);
-    font-size:16px;
-    cursor:pointer;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    transition:all 0.15s ease;
-    font-weight:700;
-  }
-  .queue-action-btn:hover{
-    background:var(--primary);
-    color:#fff;
-    transform:scale(1.08);
-  }
-  .queue-action-btn.danger:hover{
-    background:#ef4444;
-    color:#fff;
-  }
-  .queue-action-btn:disabled{
-    opacity:0.3;
-    cursor:not-allowed;
-    transform:none;
-  }
-
-  .player-shell{position:fixed;left:0;right:0;bottom:0;padding:10px;background:var(--card);border-top:1px solid rgba(0,0,0,0.04);box-shadow:0 -12px 36px rgba(10,12,20,0.08);z-index:999}
-  .player{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:6px;padding:6px 8px}
-  .player .title{font-weight:800;color:var(--primary-600);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:0.95rem}
-  .time-row{display:flex;align-items:center;gap:12px;justify-content:center;color:var(--muted);font-weight:700;font-size:0.95rem}
-  .progress{height:8px;background:rgba(0,0,0,0.04);border-radius:999px;overflow:hidden;width:72%;cursor:pointer}
-  .progress > .bar{height:100%;background:var(--primary);width:0%;transition:width .06s linear}
-
-  .controls{
-    display:grid;
-    grid-template-columns: auto 1fr auto;
-    align-items:center;
-    column-gap: 10px;
-    width:100%;
-    box-sizing:border-box;
-    padding:0 6px;
-  }
-
-  .controls-left, .controls-center, .controls-right{
-    display:flex;
-    align-items:center;
-    gap:12px;
-  }
-  .controls-center{ justify-self:center; justify-content:center; }
-
-  .control{
-    height:44px;
-    min-width:44px;
-    display:inline-flex;
-    align-items:center;
-    justify-content:center;
-    padding:0 12px;
-    border-radius:12px;
-    border:0;
-    background:var(--primary);
-    color:#fff;
-    font-weight:800;
-    cursor:pointer;
-    font-size:16px;
-    box-shadow:0 6px 18px rgba(10,12,20,0.06);
-  }
-  .control.ghost{background:var(--card);color:var(--primary);border:1px solid rgba(0,0,0,0.06);box-shadow:none}
-  .control.secondary{background:var(--card);color:var(--primary);border:1px solid rgba(0,0,0,0.06);font-weight:700}
-  .control.play{ width: calc(44px * 1.6); border-radius:14px; font-size:18px; }
-  .control.edge{
-    height:40px;
-    min-width:40px;
-    padding:0 8px;
-    border-radius:10px;
-    font-size:15px;
-  }
-  .control:active{ transform: translateY(1px); }
-
-  .toast{
-    position:fixed;
-    bottom:140px;
-    left:50%;
-    transform:translateX(-50%);
-    background:var(--card);
-    color:var(--text);
-    padding:12px 20px;
-    border-radius:10px;
-    box-shadow:0 12px 36px rgba(10,12,20,0.2);
-    font-weight:700;
-    z-index:1000;
-    opacity:0;
-    pointer-events:none;
-    transition:opacity 0.3s ease;
-  }
-  .toast.show{
-    opacity:1;
-  }
-
-  @media (max-width:900px){
-    .progress{width:64%}
-    .control{height:42px;min-width:42px}
-    .control.play{ width: 56px }
-    .control.edge{height:38px;min-width:38px}
-  }
-
-  @media (max-width:600px){
-    .controls{
-      grid-template-columns: auto auto auto;
-      justify-items:center;
-      column-gap:6px;
-      padding:0 4px;
-    }
-    .controls-center{ gap:8px; }
-    .progress{width:55%;height:6px}
-    .player .title{font-size:0.92rem}
-    .time-row{font-size:0.85rem}
-    .control{font-size:15px;padding:0 8px;height:40px;min-width:40px}
-    .control.play{ width:56px }
-    .control.edge{ height:36px; min-width:36px; padding:0 6px; }
-
-    .queue-item{
-      flex-direction:row;
-      flex-wrap:wrap;
-    }
-    .queue-num{
-      order:1;
-    }
-    .queue-info{
-      order:2;
-      flex:1 1 100%;
-      margin-bottom:8px;
-    }
-    .queue-actions{
-      order:3;
-      width:100%;
-      justify-content:flex-end;
-    }
-    .queue-context { display: none !important; }
-    .queue-action-btn{width:32px;height:32px;font-size:14px}
-    .now-playing-card .track-context{display:none}
-  }
-
-  .muted{color:var(--muted);font-weight:700}
+body{margin:0;padding:0;background:var(--bg);font-family:Inter,Arial,sans-serif;}
+.toolbar{background:var(--card);padding:.6rem 14px;display:flex;gap:.6rem;align-items:center;justify-content:space-between;border-bottom:1px solid var(--black-alpha-4);position:sticky;top:0;z-index:55;}
+.queue-count{color:var(--muted);font-weight:700;font-size:0.95rem;}
+.btn{padding:.45rem .65rem;border-radius:8px;border:0;background:var(--card);box-shadow:0 2px 8px var(--black-alpha-4);cursor:pointer;font-weight:700;color:var(--text);display:inline-flex;align-items:center;gap:6px;}
+.btn.danger{background:var(--danger);color:var(--color-white);}
+main{padding:14px;max-width:1200px;margin:0 auto;padding-bottom:20px;}
+.section{background:var(--card);border-radius:12px;padding:16px;box-shadow:var(--shadow);margin-bottom:12px;}
+.section h2{font-size:1.1rem;margin:0 0 12px 0;color:var(--primary);font-weight:800;}
+.empty-state{padding:48px 20px;text-align:center;color:var(--muted);font-weight:600;}
+.empty-state-icon{font-size:3rem;margin-bottom:12px;opacity:0.3;}
+.queue-list{display:flex;flex-direction:column;gap:8px;}
+.queue-item{display:flex;align-items:center;gap:12px;padding:12px;border-radius:10px;background:var(--black-alpha-4);border:1px solid var(--black-alpha-4);transition:all 0.2s;cursor:pointer;}
+.queue-item:hover{background:var(--primary-alpha-8);border-color:var(--primary-alpha-20);transform:translateY(-2px);}
+.queue-item.current{background:var(--primary-alpha-10);border-color:var(--primary);border-width:2px;}
+.queue-num{font-weight:800;color:var(--primary);font-size:1rem;min-width:32px;text-align:center;}
+.queue-item.current .queue-num{color:var(--primary);}
+.queue-info{flex:1;min-width:0;}
+.queue-title{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:2px;}
+.queue-context{font-size:0.85rem;color:var(--muted);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.queue-actions{display:flex;gap:6px;flex-shrink:0;}
+.queue-action-btn{width:36px;height:36px;border-radius:8px;border:1px solid var(--black-alpha-8);background:var(--card);color:var(--primary);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.15s;font-weight:700;}
+.queue-action-btn:hover{background:var(--primary);color:var(--color-white);transform:scale(1.08);}
+.queue-action-btn.danger:hover{background:var(--danger);color:var(--color-white);}
 </style>
 </head>
 <body>
-  <header>
-    <h1>Queue</h1>
-    <a class="back-btn" href="http://192.168.4.1/menu">← Back to Menu</a>
-  </header>
 
-  <div class="toolbar" role="toolbar" aria-label="queue toolbar">
-    <div class="total-count" id="queueCount">0 tracks in queue</div>
-    <div class="nav-buttons">
-      <button id="songsBtn" class="btn ghost" title="Go to Music">
-        <span class="label">Songs</span>
-      </button>
-      <button id="playlistsBtn" class="btn ghost" title="Go to Playlists">
-        <span class="label">Playlists</span>
-      </button>
-      <button id="clearQueueBtn" class="btn danger" style="display:none">
-        <span class="label">Clear Queue</span>
-      </button>
+<div class="toolbar">
+  <div id="queueCount" class="queue-count">0 in queue</div>
+  <button id="clearQueueBtn" class="btn danger" style="display:none;">Clear Queue</button>
+</div>
+
+<main>
+  <section class="section">
+    <h2>Queue</h2>
+    <div id="queueList" class="queue-list"></div>
+    <div id="emptyState" class="empty-state" style="display:none;">
+      <div class="empty-state-icon">🎵</div>
+      <div>Queue is empty. Add songs from other tabs!</div>
     </div>
-  </div>
-
-  <main>
-    <section class="section">
-      <div id="nowPlayingSection" style="display:none">
-        <div class="now-playing-card">
-          <div class="label">Now Playing</div>
-          <div class="track-name" id="npTrackName">Track Name</div>
-          <div class="track-context" id="npTrackContext"></div>
-        </div>
-      </div>
-
-      <h2>Queue</h2>
-      <div id="queueList" class="queue-list"></div>
-      <div id="emptyState" class="empty-state">
-        <div class="empty-state-icon">🎵</div>
-        <div>Queue is empty</div>
-        <div style="font-size:0.9rem;margin-top:8px;opacity:0.7">Add songs from Music or Playlists</div>
-      </div>
-    </section>
-  </main>
-
-  <div class="player-shell" role="region" aria-label="Audio player">
-    <div class="player">
-      <div id="playerTitle" class="title">Not playing</div>
-
-      <div class="time-row" aria-hidden="false">
-        <div id="playedTime">0:00</div>
-        <div id="progressWrap" class="progress" title="Click to seek"><div id="progressBar" class="bar"></div></div>
-        <div id="totalTime">0:00</div>
-      </div>
-
-      <div class="controls" id="playerControls" aria-label="player controls">
-        <div class="controls-left">
-          <button id="loopBtn" class="control edge secondary loop" title="Loop: none" aria-pressed="false">🔁</button>
-        </div>
-
-        <div class="controls-center" role="group" aria-label="playback">
-          <button id="prevBtn" class="control ghost prev" title="Previous track">⏮</button>
-          <button id="playBtn" class="control play" title="Play / Pause">▶</button>
-          <button id="nextBtn" class="control ghost next" title="Next track">⏭</button>
-        </div>
-
-        <div class="controls-right">
-          <button id="downloadBtn" class="control edge secondary download" title="Download current track">⬇</button>
-        </div>
-      </div>
-
-      <audio id="audio" preload="metadata" style="display:none" crossorigin="anonymous"></audio>
-    </div>
-  </div>
-
-  <div id="toast" class="toast"></div>
+  </section>
+</main>
 
 <script>
-const QUEUE_STATE_KEY = 'nomad_queue_state';
-const AUDIO_STATE_KEY = 'nomad_audio_state';
-const THEME_KEY = 'nomad_dark_mode';
-
-let queueState = {
-  queue: [],
-  currentMode: 'queue',
-  queueIndex: 0,
-  savedPlaylist: [],
-  savedPlaylistIndex: 0,
-  savedPlaylistSource: {}
-};
-
-let loopMode = 'none';
-let _loadingAudio = false;
+let queue = [];
+let queueIndex = 0;
+let currentMode = 'playlist';
 
 const queueListEl = document.getElementById('queueList');
-const emptyStateEl = document.getElementById('emptyState');
 const queueCountEl = document.getElementById('queueCount');
 const clearQueueBtn = document.getElementById('clearQueueBtn');
-const songsBtn = document.getElementById('songsBtn');
-const playlistsBtn = document.getElementById('playlistsBtn');
-const nowPlayingSectionEl = document.getElementById('nowPlayingSection');
-const npTrackNameEl = document.getElementById('npTrackName');
-const npTrackContextEl = document.getElementById('npTrackContext');
-const toastEl = document.getElementById('toast');
+const emptyStateEl = document.getElementById('emptyState');
 
-const audio = document.getElementById('audio');
-const playerTitle = document.getElementById('playerTitle');
-const playedTime = document.getElementById('playedTime');
-const totalTime = document.getElementById('totalTime');
-const progressWrap = document.getElementById('progressWrap');
-const progressBar = document.getElementById('progressBar');
-const playBtn = document.getElementById('playBtn');
-const prevBtn = document.getElementById('prevBtn');
-const nextBtn = document.getElementById('nextBtn');
-const loopBtn = document.getElementById('loopBtn');
-const downloadBtn = document.getElementById('downloadBtn');
-
-function normalizePath(p){ if(!p) return '/'; p=String(p); if(!p.startsWith('/')) p='/' + p; while(p.length>1 && p.endsWith('/')) p=p.slice(0,-1); return p; }
-function prettifyFilename(n){ if(!n) return ''; let s=n.replace(/\.[^/.]+$/,''); s=s.replace(/[_\.]+/g,' ').trim(); return s; }
-function apiFileUrl(path){ return `/media?file=${encodeURIComponent(normalizePath(path))}`; }
-function fmtTime(sec){ if(!sec||!isFinite(sec)) return '0:00'; sec=Math.floor(sec); const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60; if(h) return `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`; return `${m}:${String(s).padStart(2,'0')}`; }
-
-function loadQueueState() {
-  try {
-    const raw = localStorage.getItem(QUEUE_STATE_KEY);
-    if (!raw) return;
-    const loaded = JSON.parse(raw);
-    queueState = { ...queueState, ...loaded };
-    console.log('Queue state loaded:', queueState);
-  } catch(e) {
-    console.warn('Failed to load queue state:', e);
-  }
+function moveItem(fromIdx, toIdx){
+  if(fromIdx < 0 || fromIdx >= queue.length || toIdx < 0 || toIdx >= queue.length) return;
+  const temp = queue[fromIdx];
+  queue[fromIdx] = queue[toIdx];
+  queue[toIdx] = temp;
+  if(queueIndex === fromIdx) queueIndex = toIdx;
+  else if(queueIndex === toIdx) queueIndex = fromIdx;
+  render();
+  window.parent.postMessage({
+    type: 'QUEUE_UPDATED',
+    payload: { queue, queueIndex }
+  }, '*');
 }
 
-function saveQueueState() {
-  try {
-    localStorage.setItem(QUEUE_STATE_KEY, JSON.stringify(queueState));
-  } catch(e) {
-    console.warn('Failed to save queue state:', e);
-  }
-}
-
-function showToast(message) {
-  toastEl.textContent = message;
-  toastEl.classList.add('show');
-  setTimeout(() => {
-    toastEl.classList.remove('show');
-  }, 2000);
-}
-
-function renderQueue() {
+function render(){
   queueListEl.innerHTML = '';
+  queueCountEl.textContent = `${queue.length} in queue`;
   
-  if (!queueState.queue || queueState.queue.length === 0) {
+  if(queue.length === 0){
     emptyStateEl.style.display = 'block';
     clearQueueBtn.style.display = 'none';
-    queueCountEl.textContent = '0 tracks in queue';
-    nowPlayingSectionEl.style.display = 'none';
     return;
   }
-
+  
   emptyStateEl.style.display = 'none';
   clearQueueBtn.style.display = 'block';
-  queueCountEl.textContent = `${queueState.queue.length} tracks in queue`;
-
-  const currentTrack = queueState.currentMode === 'queue' && queueState.queueIndex >= 0 && queueState.queueIndex < queueState.queue.length 
-    ? queueState.queue[queueState.queueIndex] 
-    : null;
-
-  if (currentTrack && queueState.currentMode === 'queue') {
-    nowPlayingSectionEl.style.display = 'block';
-    npTrackNameEl.textContent = currentTrack.name || prettifyFilename(currentTrack.path);
-    npTrackContextEl.textContent = currentTrack.display || '';
-  } else {
-    nowPlayingSectionEl.style.display = 'none';
-  }
-
-  queueState.queue.forEach((track, idx) => {
+  
+  queue.forEach((track, idx) => {
     const item = document.createElement('div');
     item.className = 'queue-item';
-    if (queueState.currentMode === 'queue' && idx === queueState.queueIndex) {
-      item.classList.add('current');
-    }
-
+    if(currentMode === 'queue' && idx === queueIndex) item.classList.add('current');
+    
     const num = document.createElement('div');
     num.className = 'queue-num';
     num.textContent = idx + 1;
-
+    
     const info = document.createElement('div');
     info.className = 'queue-info';
-
+    
     const title = document.createElement('div');
     title.className = 'queue-title';
-    title.textContent = track.name || prettifyFilename(track.path);
-
+    title.textContent = track.name || 'Unknown';
+    
     const context = document.createElement('div');
     context.className = 'queue-context';
     context.textContent = track.display || '';
-
+    
     info.appendChild(title);
     info.appendChild(context);
-
+    
     const actions = document.createElement('div');
     actions.className = 'queue-actions';
-
-    const playNowBtn = document.createElement('button');
-    playNowBtn.className = 'queue-action-btn';
-    playNowBtn.innerHTML = '▶';
-    playNowBtn.title = 'Play Now';
-    playNowBtn.onclick = (e) => {
+    
+    const upBtn = document.createElement('button');
+    upBtn.className = 'queue-action-btn';
+    upBtn.textContent = '▲';
+    upBtn.title = 'Move up';
+    if(idx === 0) upBtn.disabled = true;
+    upBtn.onclick = (e) => {
       e.stopPropagation();
-      playNow(idx);
+      if(idx > 0) moveItem(idx, idx - 1);
     };
-
-    const moveUpBtn = document.createElement('button');
-    moveUpBtn.className = 'queue-action-btn';
-    moveUpBtn.innerHTML = '↑';
-    moveUpBtn.title = 'Move Up';
-    moveUpBtn.disabled = idx === 0;
-    moveUpBtn.onclick = (e) => {
+    
+    const downBtn = document.createElement('button');
+    downBtn.className = 'queue-action-btn';
+    downBtn.textContent = '▼';
+    downBtn.title = 'Move down';
+    if(idx === queue.length - 1) downBtn.disabled = true;
+    downBtn.onclick = (e) => {
       e.stopPropagation();
-      moveUp(idx);
+      if(idx < queue.length - 1) moveItem(idx, idx + 1);
     };
-
-    const moveDownBtn = document.createElement('button');
-    moveDownBtn.className = 'queue-action-btn';
-    moveDownBtn.innerHTML = '↓';
-    moveDownBtn.title = 'Move Down';
-    moveDownBtn.disabled = idx === queueState.queue.length - 1;
-    moveDownBtn.onclick = (e) => {
-      e.stopPropagation();
-      moveDown(idx);
-    };
-
+    
     const removeBtn = document.createElement('button');
     removeBtn.className = 'queue-action-btn danger';
-    removeBtn.innerHTML = '✕';
+    removeBtn.textContent = '✕';
     removeBtn.title = 'Remove';
     removeBtn.onclick = (e) => {
       e.stopPropagation();
-      removeFromQueue(idx);
+      window.parent.postMessage({
+        type: 'REMOVE_FROM_QUEUE',
+        payload: { index: idx }
+      }, '*');
     };
-
-    actions.appendChild(playNowBtn);
-    actions.appendChild(moveUpBtn);
-    actions.appendChild(moveDownBtn);
+    
+    actions.appendChild(upBtn);
+    actions.appendChild(downBtn);
     actions.appendChild(removeBtn);
-
+    
     item.appendChild(num);
     item.appendChild(info);
     item.appendChild(actions);
-
+    
+    item.onclick = () => {
+      window.parent.postMessage({
+        type: 'PLAY_QUEUE',
+        payload: { startIndex: idx }
+      }, '*');
+    };
+    
     queueListEl.appendChild(item);
   });
 }
 
-function playNow(index) {
-  if (index < 0 || index >= queueState.queue.length) return;
-  
-  queueState.currentMode = 'queue';
-  queueState.queueIndex = index;
-  saveQueueState();
-  
-  const track = queueState.queue[index];
-  playTrack(track);
-  renderQueue();
-  showToast('Playing now');
-}
+clearQueueBtn.addEventListener('click', () => {
+  window.parent.postMessage({
+    type: 'CLEAR_QUEUE',
+    payload: {}
+  }, '*');
+});
 
-function moveUp(index) {
-  if (index <= 0 || index >= queueState.queue.length) return;
+window.addEventListener('message', (event) => {
+  const { type, payload } = event.data;
   
-  const temp = queueState.queue[index];
-  queueState.queue[index] = queueState.queue[index - 1];
-  queueState.queue[index - 1] = temp;
-  
-  if (queueState.currentMode === 'queue') {
-    if (queueState.queueIndex === index) {
-      queueState.queueIndex = index - 1;
-    } else if (queueState.queueIndex === index - 1) {
-      queueState.queueIndex = index;
-    }
-  }
-  
-  saveQueueState();
-  renderQueue();
-}
-
-function moveDown(index) {
-  if (index < 0 || index >= queueState.queue.length - 1) return;
-  
-  const temp = queueState.queue[index];
-  queueState.queue[index] = queueState.queue[index + 1];
-  queueState.queue[index + 1] = temp;
-  
-  if (queueState.currentMode === 'queue') {
-    if (queueState.queueIndex === index) {
-      queueState.queueIndex = index + 1;
-    } else if (queueState.queueIndex === index + 1) {
-      queueState.queueIndex = index;
-    }
-  }
-  
-  saveQueueState();
-  renderQueue();
-}
-
-function removeFromQueue(index) {
-  if (index < 0 || index >= queueState.queue.length) return;
-  
-  queueState.queue.splice(index, 1);
-  
-  if (queueState.currentMode === 'queue') {
-    if (queueState.queueIndex === index) {
-      if (queueState.queue.length === 0) {
-        audio.pause();
-        audio.src = '';
-        playerTitle.textContent = 'Not playing';
-        queueState.queueIndex = 0;
-      } else if (queueState.queueIndex >= queueState.queue.length) {
-        queueState.queueIndex = queueState.queue.length - 1;
-      }
-    } else if (queueState.queueIndex > index) {
-      queueState.queueIndex--;
-    }
-  }
-  
-  saveQueueState();
-  renderQueue();
-  showToast('Removed from queue');
-}
-
-function clearQueue() {
-  if (!confirm('Clear all tracks from queue?')) return;
-  
-  const wasPlayingQueue = queueState.currentMode === 'queue' && !audio.paused;
-  
-  queueState.queue = [];
-  queueState.queueIndex = 0;
-  
-  if (wasPlayingQueue) {
-    audio.pause();
-    audio.src = '';
-    playerTitle.textContent = 'Not playing';
-  }
-  
-  saveQueueState();
-  renderQueue();
-  showToast('Queue cleared');
-}
-
-clearQueueBtn.addEventListener('click', clearQueue);
-
-songsBtn.addEventListener('click', () => {
-  if (!audio.paused && audio.currentTime > 0) {
-    setTimeout(() => {
-      window.location.href = 'music.html';
-    }, 50);
-  } else {
-    window.location.href = 'music.html';
+  if(type === 'QUEUE_UPDATE'){
+    queue = payload.queue || [];
+    queueIndex = payload.queueIndex || 0;
+    currentMode = payload.mode || 'playlist';
+    render();
   }
 });
 
-playlistsBtn.addEventListener('click', () => {
-  if (!audio.paused && audio.currentTime > 0) {
-    setTimeout(() => {
-      window.location.href = 'playlist.html';
-    }, 50);
-  } else {
-    window.location.href = 'playlist.html';
-  }
-});
+window.parent.postMessage({
+  type: 'REQUEST_QUEUE_UPDATE',
+  payload: {}
+}, '*');
 
-function playTrack(track) {
-  playerTitle.textContent = track.name || prettifyFilename(track.path);
-  
-  _setPlayButtonLoading(true);
-  audio.pause();
-  audio.src = apiFileUrl(track.path);
-  
-  try { audio.load(); } catch(e){}
-  
-  const p = audio.play();
-  if(p && typeof p.then === 'function'){
-    p.then(()=> { _setPlayButtonLoading(false); }).catch(err => {
-      console.debug('play attempt failed:', err);
-      _setPlayButtonLoading(false);
-    });
-  }
-}
-
-function playNextFromQueue() {
-  if (queueState.currentMode !== 'queue' || !queueState.queue.length) return false;
-  
-  if (loopMode === 'single') {
-    audio.currentTime = 0;
-    audio.play().catch(()=>{});
-    return true;
-  }
-  
-  if (queueState.queueIndex < queueState.queue.length - 1) {
-    queueState.queueIndex++;
-    saveQueueState();
-    playTrack(queueState.queue[queueState.queueIndex]);
-    renderQueue();
-    return true;
-  } else if (loopMode === 'all') {
-    queueState.queueIndex = 0;
-    saveQueueState();
-    playTrack(queueState.queue[queueState.queueIndex]);
-    renderQueue();
-    return true;
-  }
-  
-  return false;
-}
-
-function playPrevFromQueue() {
-  if (queueState.currentMode !== 'queue' || !queueState.queue.length) return false;
-  
-  if (audio.currentTime > 3) {
-    audio.currentTime = 0;
-    return true;
-  }
-  
-  if (queueState.queueIndex > 0) {
-    queueState.queueIndex--;
-    saveQueueState();
-    playTrack(queueState.queue[queueState.queueIndex]);
-    renderQueue();
-    return true;
-  } else if (loopMode === 'all') {
-    queueState.queueIndex = queueState.queue.length - 1;
-    saveQueueState();
-    playTrack(queueState.queue[queueState.queueIndex]);
-    renderQueue();
-    return true;
-  }
-  
-  return false;
-}
-
-function _setPlayButtonLoading(loading){
-  _loadingAudio = !!loading;
-  if(_loadingAudio){
-    playBtn.disabled = true;
-    playBtn.textContent = '⏳';
-    playBtn.style.opacity = '0.85';
-  } else {
-    playBtn.disabled = false;
-    if(audio && !audio.paused){
-      playBtn.textContent = '⏸';
-    } else {
-      playBtn.textContent = '▶';
-    }
-    playBtn.style.opacity = '';
-  }
-}
-
-audio.addEventListener('loadedmetadata', ()=> { totalTime.textContent = fmtTime(audio.duration || 0); });
-audio.addEventListener('timeupdate', ()=> { 
-  if(!audio.duration) return; 
-  playedTime.textContent = fmtTime(audio.currentTime||0); 
-  const pct = (audio.currentTime / audio.duration) * 100; 
-  progressBar.style.width = pct + '%'; 
-});
-
-audio.addEventListener('play', ()=> { playBtn.textContent = '⏸'; _setPlayButtonLoading(false); });
-audio.addEventListener('playing', ()=> { playBtn.textContent = '⏸'; _setPlayButtonLoading(false); });
-audio.addEventListener('pause', ()=> { if(!_loadingAudio){ playBtn.textContent = '▶'; } });
-
-audio.addEventListener('ended', ()=> {
-  if (!playNextFromQueue()) {
-    _setPlayButtonLoading(false);
-    playBtn.textContent = '▶';
-  }
-});
-
-audio.addEventListener('waiting', ()=> { _setPlayButtonLoading(true); });
-audio.addEventListener('stalled', ()=> { _setPlayButtonLoading(true); });
-audio.addEventListener('canplay', ()=> { _setPlayButtonLoading(false); });
-audio.addEventListener('canplaythrough', ()=> { _setPlayButtonLoading(false); });
-
-audio.addEventListener('loadstart', ()=> {
-  playedTime.textContent = '0:00';
-  progressBar.style.width = '0%';
-  _setPlayButtonLoading(true);
-});
-
-playBtn.addEventListener('click', ()=> {
-  if(playBtn.disabled || _loadingAudio) return;
-  try {
-    if(audio.paused){
-      if (!audio.src && queueState.queue.length > 0) {
-        playNow(queueState.queueIndex || 0);
-      } else {
-        audio.play().catch(()=>{});
-      }
-    } else {
-      audio.pause();
-    }
-  }catch(e){}
-});
-
-prevBtn.addEventListener('click', ()=> {
-  if (!playPrevFromQueue()) {
-    audio.currentTime = 0;
-  }
-});
-
-nextBtn.addEventListener('click', ()=> {
-  if (!playNextFromQueue()) {
-    audio.pause();
-    audio.currentTime = 0;
-    _setPlayButtonLoading(false);
-    playBtn.textContent = '▶';
-  }
-});
-
-progressWrap.addEventListener('click', (e)=> {
-  if(!audio.duration) return;
-  const r = progressWrap.getBoundingClientRect(), x = e.clientX - r.left, pct = Math.max(0, Math.min(1, x / r.width));
-  audio.currentTime = pct * audio.duration;
-});
-
-function updateLoopButtonUI(){
-  loopBtn.setAttribute('aria-pressed', String(loopMode !== 'none'));
-  loopBtn.title = `Loop: ${loopMode}`;
-  if(loopMode === 'none'){
-    loopBtn.style.background = '';
-    loopBtn.style.color = '';
-    audio.loop = false;
-  } else if(loopMode === 'all'){
-    loopBtn.style.background = 'var(--card)';
-    loopBtn.style.color = 'var(--primary)';
-    audio.loop = false;
-  } else if(loopMode === 'single'){
-    loopBtn.style.background = 'var(--primary)';
-    loopBtn.style.color = '#fff';
-    audio.loop = true;
-  }
-}
-
-loopBtn.addEventListener('click', ()=> {
-  if(loopMode === 'none') loopMode = 'all';
-  else if(loopMode === 'all') loopMode = 'single';
-  else loopMode = 'none';
-  updateLoopButtonUI();
-});
-
-downloadBtn.addEventListener('click', ()=> {
-  if(!queueState.queue || queueState.queueIndex < 0 || !queueState.queue[queueState.queueIndex]) return;
-  const track = queueState.queue[queueState.queueIndex];
-  const a = document.createElement('a');
-  a.href = normalizePath(track.path);
-  a.download = track.path.split('/').pop() || 'download';
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(()=> { try{ document.body.removeChild(a); }catch(e){} }, 50);
-});
-
-(function init(){
-  updateLoopButtonUI();
-  loadQueueState();
-  renderQueue();
-  
-  if (queueState.currentMode === 'queue' && queueState.queue.length > 0 && queueState.queueIndex >= 0) {
-    const track = queueState.queue[queueState.queueIndex];
-    if (track) {
-      playerTitle.textContent = track.name || prettifyFilename(track.path);
-    }
-  }
-})();
-
-(function themeWatcher(){
-  try {
-    const html = document.documentElement;
-    window.addEventListener('storage', (ev) => {
-      if(ev.key === THEME_KEY){
-        const dark = ev.newValue === 'true';
-        html.classList.toggle('dark', !!dark);
-      }
-    });
-  } catch(e){}
-})();
+render();
 </script>
 </body>
 </html>

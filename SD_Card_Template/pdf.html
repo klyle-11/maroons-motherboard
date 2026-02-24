@@ -1,21 +1,47 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="stylesheet" href="/master.css">
+    <script>
+(function() {
+  try {
+    const isDark = localStorage.getItem('nomad_dark_mode') === 'true';
+    if (isDark) document.documentElement.classList.add('dark');
+
+    const saved = localStorage.getItem('nomad_custom_theme');
+    if (saved) {
+      const colors = JSON.parse(saved);
+      const style = document.createElement('style');
+      style.id = 'custom-theme-style';
+      style.textContent = `
+        :root {
+          --primary: ${colors.primary} !important;
+          --primary-dark: ${colors.primaryDark} !important;
+          --bg: ${colors.bgLight} !important;
+          --card: ${colors.cardLight} !important;
+          --card-bg: ${colors.cardLight} !important;
+          --text: ${colors.textLight} !important;
+          --muted: ${colors.mutedLight} !important;
+        }
+        body.dark {
+          --bg: ${colors.bgDark} !important;
+          --card: ${colors.cardDark} !important;
+          --card-bg: ${colors.cardDark} !important;
+          --text: ${colors.textDark} !important;
+          --muted: ${colors.mutedDark} !important;
+          --primary: ${colors.primaryDarkTheme} !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  } catch(e) {}
+})();
+</script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Nomad • PDF Reader</title>
     <script src="/assets/pdf.min.js"></script>
     <style>
-        :root {
-            --primary: #007bff;
-            --primary-dark: #0056b3;
-            --bg: #f4f4f9;
-            --text: #333;
-            --muted: #6b7280;
-            --radius: 8px;
-            --shadow: 0 4px 12px rgba(0,0,0,0.08);
-        }
-
         *, *::before, *::after {
             box-sizing: border-box;
             margin: 0;
@@ -36,21 +62,21 @@
         }
 
         body.dark {
-            background: #0f1720;
-            color: #e6eef8;
+            background: var(--dark-bg-primary);
+            color: var(--dark-text-primary);
         }
 
         body.dark .reader-header {
-            background: #07142a;
+            background: var(--dark-bg-tertiary);
         }
 
         body.dark .reader-navigation {
-            background: #0b1220;
-            border-top-color: rgba(255,255,255,0.04);
+            background: var(--dark-bg-secondary);
+            border-top-color: var(--white-alpha-4);
         }
 
         body.dark #pdf-container {
-            background: #0b1220;
+            background: var(--dark-bg-secondary);
         }
 
         .reader-container {
@@ -62,7 +88,7 @@
 
         .reader-header {
             background: var(--primary);
-            color: #fff;
+            color: var(--color-white);
             padding: 12px 16px;
             display: flex;
             gap: 10px;
@@ -89,9 +115,9 @@
         }
 
         .reader-btn {
-            background: rgba(255,255,255,0.2);
+            background: var(--white-alpha-20);
             border: none;
-            color: #fff;
+            color: var(--color-white);
             padding: 8px 12px;
             border-radius: 5px;
             cursor: pointer;
@@ -253,6 +279,7 @@
             }
         }
     </style>
+    <script src="theme-manager.js"></script>
 </head>
 <body>
     <div class="reader-container">
@@ -563,3 +590,5 @@
     </script>
 </body>
 </html>
+
+

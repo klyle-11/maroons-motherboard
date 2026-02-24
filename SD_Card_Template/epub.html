@@ -1,6 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="stylesheet" href="/master.css">
+    <script>
+(function() {
+  try {
+    const isDark = localStorage.getItem('nomad_dark_mode') === 'true';
+    if (isDark) document.documentElement.classList.add('dark');
+
+    const saved = localStorage.getItem('nomad_custom_theme');
+    if (saved) {
+      const colors = JSON.parse(saved);
+      const style = document.createElement('style');
+      style.id = 'custom-theme-style';
+      style.textContent = `
+        :root {
+          --primary: ${colors.primary} !important;
+          --primary-dark: ${colors.primaryDark} !important;
+          --bg: ${colors.bgLight} !important;
+          --card: ${colors.cardLight} !important;
+          --card-bg: ${colors.cardLight} !important;
+          --text: ${colors.textLight} !important;
+          --muted: ${colors.mutedLight} !important;
+        }
+        body.dark {
+          --bg: ${colors.bgDark} !important;
+          --card: ${colors.cardDark} !important;
+          --card-bg: ${colors.cardDark} !important;
+          --text: ${colors.textDark} !important;
+          --muted: ${colors.mutedDark} !important;
+          --primary: ${colors.primaryDarkTheme} !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+  } catch(e) {}
+})();
+</script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Nomad • EPUB Reader</title>
@@ -12,17 +48,6 @@
     </script>
     <script src="/assets/epub.min.js"></script>
     <style>
-        :root {
-            --primary: #007bff;
-            --primary-dark: #0056b3;
-            --bg: #f4f4f9;
-            --text: #333;
-            --muted: #6b7280;
-            --radius: 8px;
-            --shadow: 0 4px 12px rgba(0,0,0,0.08);
-            --reader-sidebar-width: 320px;
-        }
-
         *, *::before, *::after {
             box-sizing: border-box;
             margin: 0;
@@ -43,26 +68,26 @@
         }
 
         body.dark {
-            background: #0f1720;
-            color: #e6eef8;
+            background: var(--dark-bg-primary);
+            color: var(--dark-text-primary);
         }
 
         body.dark .reader-header {
-            background: #07142a;
+            background: var(--dark-bg-tertiary);
         }
 
         body.dark .reader-navigation {
-            background: #0b1220;
-            border-top-color: rgba(255,255,255,0.04);
+            background: var(--dark-bg-secondary);
+            border-top-color: var(--white-alpha-4);
         }
 
         body.dark .toc-panel {
-            background: #081224;
-            border-left: 1px solid rgba(255,255,255,0.06);
+            background: var(--dark-bg-quaternary);
+            border-left: 1px solid var(--white-alpha-6);
         }
 
         body.dark #epub-viewer {
-            background: #0b1220;
+            background: var(--dark-bg-secondary);
         }
 
         .reader-container {
@@ -74,7 +99,7 @@
 
         .reader-header {
             background: var(--primary);
-            color: #fff;
+            color: var(--color-white);
             padding: 12px 16px;
             display: flex;
             gap: 10px;
@@ -114,6 +139,10 @@
 
         .reader-btn:hover {
             background: rgba(255,255,255,0.3);
+        }
+
+        body.dark .reader-btn:hover {
+            background: var(--white-alpha-20);
         }
 
         .reader-main {
@@ -310,6 +339,7 @@
             }
         }
     </style>
+    <script src="theme-manager.js"></script>
 </head>
 <body>
     <div class="reader-container">
@@ -355,6 +385,12 @@
         window.addEventListener('storage', (ev) => { if (ev.key === THEME_KEY) applyThemeFlag(ev.newValue === 'true'); });
 
         function normalizePath(p) { if (!p) return '/'; p = String(p); if (!p.startsWith('/')) p = '/' + p; while (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1); return p; }
+        function encodePathSegments(path) {
+            if (!path) return '';
+            let p = String(path).replace(/\\/g, '/').replace(/\/+/g, '/');
+            const leading = p.startsWith('/') ? '/' : '';
+            return leading + p.split('/').filter(Boolean).map(s => encodeURIComponent(s)).join('/');
+        }
         function fileUrlDirect(path) { if (!path) return ''; return `/media?file=${encodeURIComponent(normalizePath(path))}`; }
         
         const urlParams = new URLSearchParams(window.location.search);
@@ -421,10 +457,10 @@
                     console.log('EPUB: Destroying old book instance...');
                     try {
                         if (rendition) {
-                            await rendition.destroy();
+                            rendition.destroy();
                             rendition = null;
                         }
-                        await epubBook.destroy();
+                        epubBook.destroy();
                         epubBook = null;
                     } catch (destroyErr) {
                         console.warn('EPUB: Error destroying old instance:', destroyErr);
@@ -462,6 +498,9 @@
                                 throw new Error(`HTTP ${response.status}`);
                             }
                             return response.blob();
+                        }).catch(err => {
+                            console.error('EPUB: requestMethod fetch error:', err);
+                            throw err;
                         });
                     }
                 });
@@ -472,6 +511,9 @@
                 if (loadingText) loadingText.textContent = 'Preparing book...';
 
                 console.log('EPUB: About to await book.ready...');
+                epubBook.ready.catch(err => {
+                    console.error('EPUB: book.ready rejected:', err);
+                });
                 const readyTimeout = new Promise((_, reject) =>
                     setTimeout(() => reject(new Error('book.ready timeout after 10s')), 10000)
                 );
@@ -519,6 +561,25 @@
                 }
 
                 rendition.themes.fontSize(`${epubFontSize}%`);
+
+                // Register dark mode theme with light grey text
+                rendition.themes.register('dark', {
+                    'body': {
+                        'color': '#d0d0d0 !important',
+                        'background': '#0b1220 !important'
+                    },
+                    'p': {
+                        'color': '#d0d0d0 !important'
+                    },
+                    'a': {
+                        'color': '#4aa3ff !important'
+                    }
+                });
+
+                // Apply dark theme if dark mode is active
+                if (document.body.classList.contains('dark')) {
+                    rendition.themes.select('dark');
+                }
 
                 console.log('EPUB: Hiding loading overlay');
                 setTimeout(() => {
@@ -605,27 +666,70 @@
         tocBtn.addEventListener('click', () => tocPanel.classList.toggle('open'));
         closeToc.addEventListener('click', () => tocPanel.classList.remove('open'));
 
-        viewModeBtn.addEventListener('click', () => {
+        viewModeBtn.addEventListener('click', async () => {
             const newFlow = epubFlow === 'paginated' ? 'scrolled-doc' : 'paginated';
+
+            // Save the new flow preference
+            localStorage.setItem('nomad_epub_flow', newFlow);
+            epubFlow = newFlow;
+
+            // Update button text
+            viewModeBtn.textContent = newFlow === 'paginated' ? 'Pages' : 'Scroll';
+
+            // Save current location before switching
+            if (rendition && rendition.currentLocation()) {
+                const currentCfi = rendition.currentLocation().start.cfi;
+                saveProgress(bookPath, currentCfi, 0);
+            }
+
+            // Re-render with new flow mode without page reload
             if (rendition && epubBook) {
-                console.log('EPUB: Changing flow to', newFlow);
-                epubFlow = newFlow;
-                localStorage.setItem('nomad_epub_flow', epubFlow);
-                viewModeBtn.textContent = epubFlow === 'paginated' ? 'Pages' : 'Scroll';
+                try {
+                    await rendition.destroy();
 
-                const currentLocation = rendition.currentLocation();
-                const currentCFI = currentLocation ? currentLocation.start.cfi : null;
+                    rendition = epubBook.renderTo(epubViewer, {
+                        width: '100%',
+                        height: '100%',
+                        flow: newFlow,
+                        spread: 'auto'
+                    });
 
-                rendition.flow(epubFlow);
+                    // Restore font size and dark mode
+                    rendition.themes.fontSize(`${epubFontSize}%`);
+                    rendition.themes.register('dark', {
+                        'body': { 'color': '#d0d0d0 !important', 'background': '#0b1220 !important' },
+                        'p': { 'color': '#d0d0d0 !important' },
+                        'a': { 'color': '#4aa3ff !important' }
+                    });
+                    if (document.body.classList.contains('dark')) {
+                        rendition.themes.select('dark');
+                    }
 
-                if (currentCFI) {
-                    rendition.display(currentCFI);
+                    // Try to restore location
+                    const progress = loadProgress(bookPath);
+                    if (progress && progress.cfi) {
+                        await rendition.display(progress.cfi);
+                    } else {
+                        await rendition.display();
+                    }
+
+                    // Re-attach navigation handlers
+                    rendition.on('relocated', (location) => {
+                        try {
+                            const percent = epubBook.locations.percentageFromCfi(location.start.cfi);
+                            const percentRounded = Math.round(percent * 100);
+                            progressInfo.textContent = percentRounded + '%';
+                            saveProgress(bookPath, location.start.cfi, percentRounded);
+                            console.log('EPUB: Progress', percentRounded + '%');
+                        } catch (e) {
+                            console.warn('EPUB: Progress tracking error', e);
+                        }
+                    });
+                } catch (err) {
+                    console.error('Failed to switch view mode:', err);
                 }
-            } else {
-                epubFlow = newFlow;
-                localStorage.setItem('nomad_epub_flow', epubFlow);
-                viewModeBtn.textContent = epubFlow === 'paginated' ? 'Pages' : 'Scroll';
-                if (bookPath) openEpubReader(bookPath);
+            } else if (bookPath) {
+                openEpubReader(bookPath);
             }
         });
 
@@ -641,16 +745,11 @@
             localStorage.setItem('nomad_epub_font_pct', epubFontSize);
         });
 
-        viewModeBtn.addEventListener('click', () => {
-            epubFlow = epubFlow === 'paginated' ? 'scrolled-doc' : 'paginated';
-            localStorage.setItem('nomad_epub_flow', epubFlow);
-            viewModeBtn.textContent = epubFlow === 'paginated' ? 'Pages' : 'Scroll';
-            if (bookPath) openEpubReader(bookPath);
-        });
-
         if (bookPath) {
             openEpubReader(bookPath);
         }
     </script>
 </body>
 </html>
+
+
