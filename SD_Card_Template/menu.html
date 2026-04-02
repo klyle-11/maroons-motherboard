@@ -9,14 +9,32 @@
 <link rel="icon" href="/favicon.ico" />
 <link rel="stylesheet" href="/master.css">
 <script>
-(function() {
+(async function() {
   try {
     const isDark = localStorage.getItem('nomad_dark_mode') === 'true';
     if (isDark) document.documentElement.classList.add('dark');
 
-    const saved = localStorage.getItem('nomad_custom_theme');
-    if (saved) {
-      const colors = JSON.parse(saved);
+    async function loadThemeFromServer() {
+      try {
+        const response = await fetch('/.system-theme.json?t=' + Date.now());
+        if (response.ok) {
+          const theme = await response.json();
+          localStorage.setItem('nomad_custom_theme', JSON.stringify(theme));
+          return theme;
+        }
+      } catch (e) {
+        console.log('[Menu] No theme on SD card, using localStorage');
+      }
+      return null;
+    }
+
+    const serverTheme = await loadThemeFromServer();
+    const colors = serverTheme || (function() {
+      const saved = localStorage.getItem('nomad_custom_theme');
+      return saved ? JSON.parse(saved) : null;
+    })();
+
+    if (colors) {
       const style = document.createElement('style');
       style.id = 'custom-theme-style';
       style.textContent = `
@@ -40,7 +58,9 @@
       `;
       document.head.appendChild(style);
     }
-  } catch(e) {}
+  } catch(e) {
+    console.error('[Menu] Theme loading error:', e);
+  }
 })();
 </script>
 <script src="/theme-manager.js"></script>
@@ -235,6 +255,39 @@
 
   .search-input::placeholder {
     color:var(--muted);
+  }
+
+  .rescan-btn {
+    position:absolute;
+    right:calc((100% - 980px) / 2 + 12px);
+    top:50%;
+    transform:translateY(-50%);
+    background:transparent;
+    border:none;
+    color:var(--muted);
+    font-size:1.4rem;
+    cursor:pointer;
+    padding:8px;
+    border-radius:var(--radius);
+    transition:all 0.15s ease;
+    opacity:0.6;
+    line-height:1;
+  }
+
+  .rescan-btn:hover {
+    opacity:1;
+    color:var(--primary);
+    background:var(--primary-alpha-10);
+  }
+
+  .rescan-btn:active {
+    transform:translateY(-50%) scale(0.9);
+  }
+
+  @media (max-width: 1020px) {
+    .rescan-btn {
+      right:12px;
+    }
   }
 
   /* loader under input for feedback */
@@ -769,6 +822,7 @@
 
     <div class="search-row" style="position:relative; z-index:210;">
       <input id="searchInput" class="search-input" placeholder="Search movies, shows, music, gallery, books, files..." aria-label="Search">
+      <button id="rescanBtn" class="rescan-btn" title="Rescan and rebuild search index" aria-label="Rescan index" style="display:none;">↻</button>
       <div id="searchLoader" class="search-loader" aria-hidden="true"><div class="bar"></div></div>
     </div>
 
@@ -831,6 +885,59 @@ const resultsPanel = document.getElementById('resultsPanel');
 const resumePanel = document.getElementById('resumePanel');
 const resumeList = document.getElementById('resumeList');
 const pageBg = document.querySelector('.page-bg');
+const rescanBtn = document.getElementById('rescanBtn');
+
+// Show rescan button when search input is focused
+searchInput.addEventListener('focus', () => {
+  if (rescanBtn) rescanBtn.style.display = 'block';
+});
+
+// Hide rescan button when clicking outside
+document.addEventListener('click', (e) => {
+  if (rescanBtn && !searchInput.contains(e.target) && !rescanBtn.contains(e.target)) {
+    rescanBtn.style.display = 'none';
+  }
+});
+
+// Handle rescan button click
+if (rescanBtn) {
+  rescanBtn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (confirm('Rebuild search index? This will take about 30 seconds.')) {
+      try {
+        rescanBtn.disabled = true;
+        rescanBtn.style.opacity = '0.3';
+        searchLoader.style.display = 'block';
+
+        // Clear cache and force rebuild
+        searchIndexCache = null;
+        buildPromise = null;
+        delete buildSearchIndex._building;
+
+        // Force rebuild with save to SD card
+        await buildSearchIndex(true);
+
+        alert('Search index rebuilt and saved successfully!');
+
+        // Re-run search if there's a query
+        const query = searchInput.value.trim();
+        if (query) {
+          buildPromise = null;
+          performSearch(query);
+        }
+      } catch (e) {
+        console.error('[Search] Rescan failed:', e);
+        alert('Failed to rebuild index: ' + e.message);
+      } finally {
+        rescanBtn.disabled = false;
+        rescanBtn.style.opacity = '';
+        searchLoader.style.display = 'none';
+      }
+    }
+  });
+}
 
 /* ---------------- ZIM / javascript-libzim integration ---------------- */
 /* libzim files are in /assets/kiwix/www/js/ 
@@ -1242,15 +1349,64 @@ function previewPathFromItemPath(itemPath){
   return null;
 }
 
+async function loadSearchIndexFromSD() {
+  try {
+    const response = await fetch('/.search-index.json?t=' + Date.now());
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.entries && Array.isArray(data.entries)) {
+        console.info('[Search] Loaded cached index from SD card:', data.entries.length, 'entries');
+        return data.entries;
+      }
+    }
+  } catch (e) {
+    console.log('[Search] No cached index on SD card, will build from scratch');
+  }
+  return null;
+}
+
+async function saveSearchIndexToSD(entries) {
+  try {
+    const data = { entries, ts: Date.now() };
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const formData = new FormData();
+    formData.append('file', blob, '.search-index.json');
+    formData.append('path', '/');
+
+    const response = await fetch('/upload', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (response.ok) {
+      console.info('[Search] Saved index to SD card:', entries.length, 'entries');
+      return true;
+    } else {
+      console.warn('[Search] Failed to save index to SD card:', response.status);
+    }
+  } catch (e) {
+    console.error('[Search] Error saving index to SD card:', e);
+  }
+  return false;
+}
+
 /* Builds a robust search index and preview maps (concurrent fetches) */
-async function buildSearchIndex(){
-  if(searchIndexCache && searchIndexCache.entries) return searchIndexCache.entries;
-  
+async function buildSearchIndex(forceRebuild = false){
+  if(!forceRebuild && searchIndexCache && searchIndexCache.entries) return searchIndexCache.entries;
+
+  if (!forceRebuild) {
+    const cachedEntries = await loadSearchIndexFromSD();
+    if (cachedEntries) {
+      searchIndexCache = { entries: cachedEntries, ts: Date.now() };
+      return cachedEntries;
+    }
+  }
+
   // Prevent multiple simultaneous builds
   if (buildSearchIndex._building) {
     return buildSearchIndex._building;
   }
-  
+
   buildSearchIndex._building = (async () => {
     try {
       previewByPath = new Map();
@@ -1489,6 +1645,10 @@ async function buildSearchIndex(){
 
       searchIndexCache = { entries: finalEntries, ts: Date.now() };
       console.info('Search index built:', finalEntries.length);
+
+      // Save to SD card for future visits
+      saveSearchIndexToSD(finalEntries).catch(e => console.warn('[Search] Failed to save to SD:', e));
+
       return finalEntries;
     } finally {
       delete buildSearchIndex._building;
