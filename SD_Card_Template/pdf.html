@@ -445,7 +445,12 @@
                 centerPage - 1,
                 centerPage + 1,
                 centerPage + 2,
-                centerPage - 2
+                centerPage - 2,
+                centerPage + 3,
+                centerPage + 4,
+                centerPage + 5,
+                centerPage - 3,
+                centerPage - 4
             ].filter(p => p >= 1 && p <= totalPages);
 
             pagesToLoad.forEach(p => renderPage(p));
@@ -456,41 +461,41 @@
             currentPage = pageNum;
             updatePageInfo();
             saveProgress(pdfPath, currentPage);
-            
+
             if (!renderedPages.has(currentPage)) {
                 renderPage(currentPage).then(() => scrollToPage(currentPage));
             } else {
                 scrollToPage(currentPage);
             }
-            
+
             preloadPages(currentPage);
         }
 
         function changeZoom(newScale) {
             scale = Math.max(0.5, Math.min(3.0, newScale));
             updateZoomInfo();
-            
+
             renderedPages.clear();
             renderQueue.clear();
             pdfContainer.querySelectorAll('.pdf-page').forEach(c => c.remove());
-            
+
             goToPage(currentPage);
         }
 
         async function loadPDF(path) {
             try {
                 loadingOverlay.classList.remove('hidden');
-                
+
                 const fileName = path.split('/').pop();
                 readerTitle.textContent = fileName.replace(/\.[^/.]+$/, '').replace(/[_\.]+/g, ' ').trim();
 
                 const url = fileUrlDirect(path);
                 console.log('PDF: Loading from', url);
-                
+
                 if (typeof pdfjsLib === 'undefined') {
                     throw new Error('PDF.js library not loaded');
                 }
-                
+
                 pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/pdf.worker.min.js';
 
                 const loadingTask = pdfjsLib.getDocument(url);
@@ -504,22 +509,22 @@
 
                 pdfDoc = await loadingTask.promise;
                 totalPages = pdfDoc.numPages;
-                
+
                 console.log(`PDF: Loaded ${totalPages} pages`);
-                
+
                 const progress = loadProgress(path);
                 const startPage = (progress && progress.page > 0 && progress.page <= totalPages) ? progress.page : 1;
-                
+
                 updatePageInfo();
                 updateZoomInfo();
-                
+
                 await renderPage(startPage);
                 loadingOverlay.classList.add('hidden');
-                
+
                 currentPage = startPage;
                 scrollToPage(startPage);
                 preloadPages(startPage);
-                
+
                 const observer = new IntersectionObserver((entries) => {
                     entries.forEach(entry => {
                         if (entry.isIntersecting) {
@@ -533,14 +538,38 @@
                         }
                     });
                 }, { threshold: 0.5 });
-                
+
                 const checkAndObserve = setInterval(() => {
                     const canvases = pdfContainer.querySelectorAll('.pdf-page');
-                    canvases.forEach(canvas => observer.observe(canvas));
-                    if (canvases.length >= Math.min(5, totalPages)) {
-                        clearInterval(checkAndObserve);
-                    }
+                    canvases.forEach(canvas => {
+                        if (!canvas.dataset.observed) {
+                            observer.observe(canvas);
+                            canvas.dataset.observed = 'true';
+                        }
+                    });
                 }, 500);
+
+                let lastScrollCheck = 0;
+                pdfContainer.addEventListener('scroll', () => {
+                    const now = Date.now();
+                    if (now - lastScrollCheck < 200) return;
+                    lastScrollCheck = now;
+
+                    const scrollTop = pdfContainer.scrollTop;
+                    const scrollHeight = pdfContainer.scrollHeight;
+                    const clientHeight = pdfContainer.clientHeight;
+                    const scrollPercent = (scrollTop + clientHeight) / scrollHeight;
+
+                    if (scrollPercent > 0.8) {
+                        const maxRendered = Math.max(...Array.from(renderedPages));
+                        if (maxRendered < totalPages) {
+                            const pagesToRender = Math.min(5, totalPages - maxRendered);
+                            for (let i = 1; i <= pagesToRender; i++) {
+                                renderPage(maxRendered + i);
+                            }
+                        }
+                    }
+                });
                 
             } catch (err) {
                 console.error('PDF load error', err);
