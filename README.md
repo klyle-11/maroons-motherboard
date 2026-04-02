@@ -14,21 +14,78 @@ Stream movies, music, books, and shows anywhere — no internet required.</p>
 </p>
 
 ---
+## LATEST UPDATE
 
-### LATEST UPDATE
+### Major Highlights
 
-**Major Highlights:**
-*   **Plyr Integration:** Replaced native browser video elements with the Plyr library. This ensures a uniform UI across all devices and fixes playback issues specifically on Apple hardware.
-*   **Theme Customization:** Added a new Theme Control Panel to the Admin Console. It includes 15 preset themes and a customizer for manual color adjustments.
-*   **Music Overhaul & Queue:** Music now plays seamlessly across the Songs, Playlists, and Queue pages without interruption. The new **Queue** feature allows you to add tracks from any music page and reorder or delete them on the fly.
-*   **Books & Comics:** The PDF viewer is now split into its own page for better performance. EPUB support has been cleaned up and is now fully functional. The Comic Reader now supports **Webtoon infinite scroll** and standard reading modes.
-*   **Comic Formatting:** To use the comic reader, rename a `.cbz` file to `.zip`, unzip it, and place the resulting folder (containing the images) into `/Books`. The system will automatically identify it as a comic.
+#### Plyr Integration
+- Replaced native browser video elements with the **Plyr** library  
+- Ensures a consistent UI across all devices  
+- Fixes playback issues on Apple hardware  
 
-**Default Themes:**
-Default Blue, Forest Night, Cherry Blossom, Mocha Latte, Ocean Depths, Autumn Leaves, Lavender Fields, Sunset Horizon, Coral Reef, Mountain Mist, Jade Garden, Desert Sand, Arctic Aurora, DeLorean, Midnight Code.
+#### Theme Customization
+- New **Theme Control Panel** in the Admin Console  
+- Expanded to **28 preset themes** (previously 15)  
+- Added full **custom theme editor** for manual color adjustments  
+- Mobile-optimized with compact layout and touch-friendly controls  
+
+#### Music Overhaul & Queue
+- Seamless playback across:
+  - Songs
+  - Playlists
+  - Queue  
+- New **Queue system**:
+  - Add tracks from any music page  
+  - Reorder or remove tracks dynamically  
+- Search results now link directly to the queue  
+
+#### Books & Comics Improvements
+- **PDF Viewer**
+  - Moved to a dedicated page  
+  - Supports **progressive loading** for large files  
+
+- **EPUB Reader**
+  - Cleaned up and stable    
+  - Prevents crashes on low-memory devices  
+  - still not recomended as its slower than pdf, but does work. 
+  
+- **Comic Reader**
+  - Supports:
+    - Webtoon **infinite scroll**
+    - Standard page mode  
+  - Works with actual raw CBZ files  
+
+#### Comic Formatting
+To use the comic reader:
+1. Add a CBZ file as if it where a PDF, will also pick up images. 
+2. System can now unzip and pull images on the fly
+
+- Automatically detected as a comic by the system  
+
+#### Search & Performance
+- Menu search now uses **cached indices** for much faster results  
+- Themes are now loaded from:
+  `/.system-theme.json`  
+  - Ensures system-wide consistency  
+
+#### Bug Fixes
+- Fixed movies page modal transparency issue in dark mode  
+- Fixed theme customizer not respecting:
+  - Active theme  
+  - Dark/light mode toggle  
 
 ---
 
+### Default Themes (28)
+
+Default Blue, Forest Night, Cherry Blossom, Mocha Latte, Ocean Depths,  
+Autumn Leaves, Lavender Fields, Sunset Horizon, Coral Reef, Mountain Mist,  
+Jade Garden, Desert Sand, Arctic Aurora, DeLorean, Midnight Code, 90s Retro,  
+Mint Breeze, Rose Gold, Crimson Night, Emerald Dream, Royal Purple,  
+Copper Sunset, Sapphire Sea, Peach Cream, Slate Storm, Lime Zest,  
+Burgundy Wine, Teal Oasis
+
+---
 ## What is Nomad
 
 Jcorp Nomad is an open-source offline media server designed for travel, remote work, classrooms, camping, and more. It runs entirely on an ESP32-S3, creates a local Wi-Fi hotspot, and serves media through a browser interface. Multiple users can access separate media streams simultaneously, all without internet access.  
