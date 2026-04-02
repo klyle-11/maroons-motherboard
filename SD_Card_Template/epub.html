@@ -3,14 +3,32 @@
 <head>
     <link rel="stylesheet" href="/master.css">
     <script>
-(function() {
+(async function() {
   try {
     const isDark = localStorage.getItem('nomad_dark_mode') === 'true';
     if (isDark) document.documentElement.classList.add('dark');
 
-    const saved = localStorage.getItem('nomad_custom_theme');
-    if (saved) {
-      const colors = JSON.parse(saved);
+    async function loadThemeFromServer() {
+      try {
+        const response = await fetch('/.system-theme.json?t=' + Date.now());
+        if (response.ok) {
+          const theme = await response.json();
+          localStorage.setItem('nomad_custom_theme', JSON.stringify(theme));
+          return theme;
+        }
+      } catch (e) {
+        console.log('[EPUB] No theme on SD card, using localStorage');
+      }
+      return null;
+    }
+
+    const serverTheme = await loadThemeFromServer();
+    const colors = serverTheme || (function() {
+      const saved = localStorage.getItem('nomad_custom_theme');
+      return saved ? JSON.parse(saved) : null;
+    })();
+
+    if (colors) {
       const style = document.createElement('style');
       style.id = 'custom-theme-style';
       style.textContent = `
@@ -19,14 +37,12 @@
           --primary-dark: ${colors.primaryDark} !important;
           --bg: ${colors.bgLight} !important;
           --card: ${colors.cardLight} !important;
-          --card-bg: ${colors.cardLight} !important;
           --text: ${colors.textLight} !important;
           --muted: ${colors.mutedLight} !important;
         }
         body.dark {
           --bg: ${colors.bgDark} !important;
           --card: ${colors.cardDark} !important;
-          --card-bg: ${colors.cardDark} !important;
           --text: ${colors.textDark} !important;
           --muted: ${colors.mutedDark} !important;
           --primary: ${colors.primaryDarkTheme} !important;
@@ -34,7 +50,9 @@
       `;
       document.head.appendChild(style);
     }
-  } catch(e) {}
+  } catch(e) {
+    console.error('[EPUB] Theme loading error:', e);
+  }
 })();
 </script>
     <meta charset="utf-8" />
@@ -65,29 +83,6 @@
             display: flex;
             flex-direction: column;
             overflow: hidden;
-        }
-
-        body.dark {
-            background: var(--dark-bg-primary);
-            color: var(--dark-text-primary);
-        }
-
-        body.dark .reader-header {
-            background: var(--dark-bg-tertiary);
-        }
-
-        body.dark .reader-navigation {
-            background: var(--dark-bg-secondary);
-            border-top-color: var(--white-alpha-4);
-        }
-
-        body.dark .toc-panel {
-            background: var(--dark-bg-quaternary);
-            border-left: 1px solid var(--white-alpha-6);
-        }
-
-        body.dark #epub-viewer {
-            background: var(--dark-bg-secondary);
         }
 
         .reader-container {
@@ -141,10 +136,6 @@
             background: rgba(255,255,255,0.3);
         }
 
-        body.dark .reader-btn:hover {
-            background: var(--white-alpha-20);
-        }
-
         .reader-main {
             flex: 1;
             display: flex;
@@ -177,10 +168,6 @@
             background: rgba(250, 250, 250, 0.95);
             z-index: 50;
             gap: 15px;
-        }
-
-        body.dark .loading-overlay {
-            background: rgba(11, 18, 32, 0.95);
         }
 
         .loading-overlay.hidden {
@@ -238,10 +225,6 @@
             text-align: center;
         }
 
-        body.dark .progress-info {
-            color: #e6eef8;
-        }
-
         .toc-panel {
             position: absolute;
             top: 0;
@@ -273,11 +256,6 @@
             background: #fff;
         }
 
-        body.dark .toc-header {
-            background: #081224;
-            border-bottom-color: rgba(255,255,255,0.06);
-        }
-
         .toc-content {
             padding: 8px 6px;
             overflow: auto;
@@ -297,14 +275,6 @@
 
         .toc-item:hover {
             background: #eef3ff;
-        }
-
-        body.dark .toc-item {
-            color: #e6eef8;
-        }
-
-        body.dark .toc-item:hover {
-            background: rgba(255,255,255,0.06);
         }
 
         .toc-sub {
@@ -482,6 +452,10 @@
                 console.log('EPUB: Loading book from', url);
                 console.log('EPUB: About to call ePub()...');
 
+                // Detect mobile device for optimization
+                const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+                console.log('EPUB: Mobile device detected:', isMobile);
+
                 epubBook = ePub(url, {
                     requestMethod: function(url, type) {
                         console.log('EPUB: requestMethod called with:', url, type);
@@ -515,7 +489,7 @@
                     console.error('EPUB: book.ready rejected:', err);
                 });
                 const readyTimeout = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('book.ready timeout after 10s')), 10000)
+                    setTimeout(() => reject(new Error('book.ready timeout after 15s')), 15000)
                 );
 
                 await Promise.race([epubBook.ready, readyTimeout]);
@@ -529,17 +503,25 @@
                     width: '100%',
                     height: '100%',
                     flow: epubFlow,
-                    spread: 'auto'
+                    spread: isMobile ? 'none' : 'auto',
+                    minSpreadWidth: isMobile ? 0 : 800
                 });
                 console.log('EPUB: Rendition created:', rendition);
 
                 if (loadingText) loadingText.textContent = 'Generating locations...';
                 try {
                     console.log('EPUB: Generating locations...');
-                    await epubBook.locations.generate(1024);
+                    // Use smaller chunk size on mobile to reduce memory usage
+                    const chunkSize = isMobile ? 512 : 1024;
+                    const locTimeout = new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error('Location generation timeout')), isMobile ? 15000 : 30000)
+                    );
+
+                    await Promise.race([epubBook.locations.generate(chunkSize), locTimeout]);
                     console.log('EPUB: Locations generated, total:', epubBook.locations.total);
                 } catch (locErr) {
                     console.warn('EPUB: Location generation failed, continuing anyway', locErr);
+                    // Continue without locations - progress tracking will be limited but book will still work
                 }
 
                 const progress = loadProgress(path);
@@ -562,7 +544,7 @@
 
                 rendition.themes.fontSize(`${epubFontSize}%`);
 
-                // Register dark mode theme with light grey text
+                // Register dark mode theme using CSS variables
                 rendition.themes.register('dark', {
                     'body': {
                         'color': '#d0d0d0 !important',
@@ -632,11 +614,17 @@
 
                 rendition.on('relocated', (location) => {
                     try {
-                        const percent = epubBook.locations.percentageFromCfi(location.start.cfi);
-                        const percentRounded = Math.round(percent * 100);
-                        progressInfo.textContent = percentRounded + '%';
-                        saveProgress(path, location.start.cfi, percentRounded);
-                        console.log('EPUB: Progress', percentRounded + '%');
+                        if (epubBook.locations && epubBook.locations.total > 0) {
+                            const percent = epubBook.locations.percentageFromCfi(location.start.cfi);
+                            const percentRounded = Math.round(percent * 100);
+                            progressInfo.textContent = percentRounded + '%';
+                            saveProgress(path, location.start.cfi, percentRounded);
+                            console.log('EPUB: Progress', percentRounded + '%');
+                        } else {
+                            // No locations available, just save CFI
+                            progressInfo.textContent = '—';
+                            saveProgress(path, location.start.cfi, 0);
+                        }
                     } catch (e) {
                         console.warn('EPUB: Progress tracking error', e);
                     }
@@ -668,6 +656,7 @@
 
         viewModeBtn.addEventListener('click', async () => {
             const newFlow = epubFlow === 'paginated' ? 'scrolled-doc' : 'paginated';
+            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
             // Save the new flow preference
             localStorage.setItem('nomad_epub_flow', newFlow);
@@ -691,7 +680,8 @@
                         width: '100%',
                         height: '100%',
                         flow: newFlow,
-                        spread: 'auto'
+                        spread: isMobile ? 'none' : 'auto',
+                        minSpreadWidth: isMobile ? 0 : 800
                     });
 
                     // Restore font size and dark mode
@@ -716,11 +706,16 @@
                     // Re-attach navigation handlers
                     rendition.on('relocated', (location) => {
                         try {
-                            const percent = epubBook.locations.percentageFromCfi(location.start.cfi);
-                            const percentRounded = Math.round(percent * 100);
-                            progressInfo.textContent = percentRounded + '%';
-                            saveProgress(bookPath, location.start.cfi, percentRounded);
-                            console.log('EPUB: Progress', percentRounded + '%');
+                            if (epubBook.locations && epubBook.locations.total > 0) {
+                                const percent = epubBook.locations.percentageFromCfi(location.start.cfi);
+                                const percentRounded = Math.round(percent * 100);
+                                progressInfo.textContent = percentRounded + '%';
+                                saveProgress(bookPath, location.start.cfi, percentRounded);
+                                console.log('EPUB: Progress', percentRounded + '%');
+                            } else {
+                                progressInfo.textContent = '—';
+                                saveProgress(bookPath, location.start.cfi, 0);
+                            }
                         } catch (e) {
                             console.warn('EPUB: Progress tracking error', e);
                         }
@@ -743,6 +738,34 @@
             epubFontSize = Math.max(80, epubFontSize - 10);
             if (rendition) rendition.themes.fontSize(`${epubFontSize}%`);
             localStorage.setItem('nomad_epub_font_pct', epubFontSize);
+        });
+
+        let touchStartX = 0;
+        let touchStartY = 0;
+        const MIN_SWIPE_DISTANCE = 50;
+
+        epubViewer.addEventListener('touchstart', (e) => {
+            touchStartX = e.changedTouches[0].screenX;
+            touchStartY = e.changedTouches[0].screenY;
+        }, { passive: true });
+
+        epubViewer.addEventListener('touchend', (e) => {
+            if (!rendition) return;
+            const dx = e.changedTouches[0].screenX - touchStartX;
+            const dy = e.changedTouches[0].screenY - touchStartY;
+            if (Math.abs(dx) > MIN_SWIPE_DISTANCE && Math.abs(dx) > Math.abs(dy) * 1.5) {
+                if (dx < 0) {
+                    rendition.next();
+                } else {
+                    rendition.prev();
+                }
+            }
+        }, { passive: true });
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && rendition) {
+                console.log('EPUB: Page hidden, pausing rendering');
+            }
         });
 
         if (bookPath) {
