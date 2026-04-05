@@ -1685,10 +1685,11 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
     }
   }
 
-  // OPTIMIZATION: Increase initial chunk from 50MB to 100MB for faster buffering
-  if (openEndedRange && (endByte - startByte) > (100 * 1024 * 1024)) {
-    endByte = startByte + (100 * 1024 * 1024) - 1;
-    Serial.printf("[RangeHandler] Capping open-ended range to 100MB: %s-%s\n", 
+  // FIX: Reduce initial chunk from 100MB to 25MB to prevent long buffering delays
+  // that can cause video stalls when browser requests next chunk
+  if (openEndedRange && (endByte - startByte) > (25 * 1024 * 1024)) {
+    endByte = startByte + (25 * 1024 * 1024) - 1;
+    Serial.printf("[RangeHandler] Capping open-ended range to 25MB for smoother streaming: %s-%s\n",
                   humanSize(startByte).c_str(), humanSize(endByte).c_str());
   }
 
@@ -1733,7 +1734,28 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
 
   if (isMediaStream && contentLength > 10000) {
     mediaStreamingActive = true;
-    shutdownBackgroundTasksForStreaming(); 
+    shutdownBackgroundTasksForStreaming();
+
+    if (streamingFilesMutex && xSemaphoreTake(streamingFilesMutex, pdMS_TO_TICKS(300)) == pdTRUE) {
+      int closed = 0;
+      for (auto it = streamingFiles.begin(); it != streamingFiles.end(); ) {
+        if (it->first != filePath) {
+          if (it->second) it->second.close();
+          if (streamingPathsMutex && xSemaphoreTake(streamingPathsMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            activeStreamingPaths.erase(it->first);
+            xSemaphoreGive(streamingPathsMutex);
+          }
+          it = streamingFiles.erase(it);
+          closed++;
+        } else {
+          ++it;
+        }
+      }
+      xSemaphoreGive(streamingFilesMutex);
+      if (closed > 0) {
+        Serial.printf("[Stream] Closed %d previous stream handles before new stream: %s\n", closed, filePath.c_str());
+      }
+    }
   }
 
   bool isProbeRequest = (contentLength <= 2048);
@@ -1758,6 +1780,7 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
   }
 
   releaseSd();
+  file.close();
 
   if (streamingPathsMutex && xSemaphoreTake(streamingPathsMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
     activeStreamingPaths.insert(filePath);
@@ -1770,45 +1793,75 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
     [filePath, startByte](uint8_t *buffer, size_t maxLen, size_t index) mutable -> size_t {
       if (index == 0) {
         if (streamingFilesMutex && xSemaphoreTake(streamingFilesMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
-          File f = SD_MMC.open(filePath, "r");
-          if (!f) {
-            Serial.printf("[Stream] Failed to open file for streaming: %s\n", filePath.c_str());
+          // CRITICAL FIX: Check if file is already open for this path
+          auto it = streamingFiles.find(filePath);
+          if (it != streamingFiles.end()) {
+            // File handle already exists - check if it's still valid
+            if (it->second && it->second.available()) {
+              // Reuse existing handle, just seek to new position
+              it->second.seek(startByte);
+              Serial.printf("[Stream] Reusing existing file handle at position %lu: %s\n", (unsigned long)startByte, filePath.c_str());
+              xSemaphoreGive(streamingFilesMutex);
+            } else {
+              // Handle is invalid - close and remove it before opening new one
+              Serial.printf("[Stream] Closing stale file handle before reopening: %s\n", filePath.c_str());
+              it->second.close();
+              streamingFiles.erase(it);
+
+              // Now open fresh handle
+              File f = SD_MMC.open(filePath, "r");
+              if (!f) {
+                Serial.printf("[Stream] Failed to open file for streaming: %s\n", filePath.c_str());
+                xSemaphoreGive(streamingFilesMutex);
+                return 0;
+              }
+              streamingFiles[filePath] = f;
+              streamingFiles[filePath].seek(startByte);
+              Serial.printf("[Stream] Opened new file at position %lu: %s\n", (unsigned long)startByte, filePath.c_str());
+              xSemaphoreGive(streamingFilesMutex);
+            }
+          } else {
+            // No existing handle - open new file
+            File f = SD_MMC.open(filePath, "r");
+            if (!f) {
+              Serial.printf("[Stream] Failed to open file for streaming: %s\n", filePath.c_str());
+              xSemaphoreGive(streamingFilesMutex);
+              return 0;
+            }
+            streamingFiles[filePath] = f;
+            streamingFiles[filePath].seek(startByte);
+            Serial.printf("[Stream] Opened file at position %lu: %s\n", (unsigned long)startByte, filePath.c_str());
             xSemaphoreGive(streamingFilesMutex);
-            return 0;
           }
-          streamingFiles[filePath] = f;
-          streamingFiles[filePath].seek(startByte);
-          Serial.printf("[Stream] Opened file at position %lu: %s\n", (unsigned long)startByte, filePath.c_str());
-          xSemaphoreGive(streamingFilesMutex);
         } else {
           Serial.printf("[Stream] Failed to acquire mutex for file open: %s\n", filePath.c_str());
           return 0;
         }
       }
 
+      // CRITICAL FIX: Keep mutex locked during entire read operation to prevent TOCTOU
       if (streamingFilesMutex && xSemaphoreTake(streamingFilesMutex, pdMS_TO_TICKS(200)) != pdTRUE) {
         Serial.printf("[Stream] Mutex timeout during read for: %s\n", filePath.c_str());
         return 0;
       }
 
-      if (streamingFiles.find(filePath) == streamingFiles.end()) {
-        if (streamingFilesMutex) xSemaphoreGive(streamingFilesMutex);
+      // Check if file still exists in map
+      auto it = streamingFiles.find(filePath);
+      if (it == streamingFiles.end()) {
+        xSemaphoreGive(streamingFilesMutex);
         return 0;
       }
 
-      File& file = streamingFiles[filePath];
-      if (streamingFilesMutex) xSemaphoreGive(streamingFilesMutex);
+      File& file = it->second;
 
+      // Perform read while holding mutex
       size_t bytesRead = file.read(buffer, maxLen);
 
+      // Check if stream is complete
       if (bytesRead == 0 || !file.available()) {
-        if (streamingFilesMutex && xSemaphoreTake(streamingFilesMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
-          if (streamingFiles.find(filePath) != streamingFiles.end()) {
-            streamingFiles[filePath].close();
-            streamingFiles.erase(filePath);
-          }
-          xSemaphoreGive(streamingFilesMutex);
-        }
+        file.close();
+        streamingFiles.erase(it);
+        xSemaphoreGive(streamingFilesMutex);
 
         if (streamingPathsMutex && xSemaphoreTake(streamingPathsMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
           activeStreamingPaths.erase(filePath);
@@ -1818,6 +1871,7 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
         return bytesRead;
       }
 
+      xSemaphoreGive(streamingFilesMutex);
       return bytesRead;
     }
   );
@@ -1833,9 +1887,13 @@ void handleRangeRequest(AsyncWebServerRequest *request) {
   response->addHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
   response->addHeader("Access-Control-Allow-Headers", "Range, Content-Type, Accept");
   response->addHeader("Accept-Ranges", "bytes");
+  if (isMediaStream) {
+    response->addHeader("Accept-Ranges", "none");
+  }
   response->addHeader("Content-Length", String(contentLength));
   response->addHeader("Cache-Control", "public, max-age=3600");
   response->addHeader("Pragma", "no-cache");
+  response->addHeader("Connection", "close");
   request->send(response);
 }
 void handleListFiles(AsyncWebServerRequest *request) {
@@ -3258,9 +3316,9 @@ void checkStreamingTimeout() {
     }
   }
 
-  // Cleanup stale stream file handles every 30 seconds
+  // Cleanup stale stream file handles every 5 seconds
   static unsigned long lastCleanup = 0;
-  if (millis() - lastCleanup > 30000) {
+  if (millis() - lastCleanup > 5000) {
     lastCleanup = millis();
     if (streamingFilesMutex && xSemaphoreTake(streamingFilesMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
       if (!streamingFiles.empty()) {
