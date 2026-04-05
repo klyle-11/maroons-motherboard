@@ -762,21 +762,11 @@ function openMovieFromHash(hashObj){
   // Set currentMovie used by openVideo / resume logic
   currentMovie = found;
 
-  // Detect if user came from the Menu (only auto-play in that case)
-  const ref = (document.referrer || '').toLowerCase();
-  const fromMenu = ref && (ref.includes('/menu') || ref.includes('/menu.html') || ref.includes('/menu/'));
+  // Hash navigation indicates intent to play: auto-play with resume
+  openVideo(fileUrl(found.path), true);
 
-  if(fromMenu){
-    // Auto-play and use resume (openVideo's useResume param handles seeking)
-    openVideo(fileUrl(found.path), true);
-
-    // Clear the hash so reloads / back button don't auto-play again unexpectedly
-    try { history.replaceState(null, '', location.pathname + location.search); } catch(e){ /* ignore */ }
-  } else {
-    // Normal behavior: show modal/options so we don't interrupt a regular visitor
-    showMovieOptions(found);
-    // leave the hash intact for user context
-  }
+  // Clear the hash so reloads / back button don't auto-play again unexpectedly
+  try { history.replaceState(null, '', location.pathname + location.search); } catch(e){ /* ignore */ }
 }
 
 function handleHashNavigation(hashObj){
@@ -863,29 +853,23 @@ function openVideo(src, useResume=false){
   clearTimeout(stallTimer);
   stallRetries = 0;
 
+  console.log('[openVideo] currentMovie:', currentMovie ? currentMovie.path : 'NONE', 'useResume:', useResume);
   const saved = findResume(currentMovie || { path: '' });
+  console.log('[openVideo] findResume result:', saved);
   let startTime = 0;
   if(useResume && saved && saved.entry && saved.entry.position > 1){
     startTime = saved.entry.position;
   }
+  console.log('[openVideo] startTime will be:', startTime);
 
   videoPlayer.pause();
+  videoPlayer.removeAttribute('src');
   videoPlayer.innerHTML = '';
 
-  const source = document.createElement('source');
-  source.src = src;
-  source.type = 'video/mp4';
-  videoPlayer.appendChild(source);
-
+  const subtitles = [];
   if(currentMovie && currentMovie.subtitles && currentMovie.subtitles.length > 0){
     const subtitleUrl = fileUrl(currentMovie.subtitles[0].path);
-    const track = document.createElement('track');
-    track.kind = 'subtitles';
-    track.label = 'English';
-    track.srclang = 'en';
-    track.src = subtitleUrl;
-    track.default = true;
-    videoPlayer.appendChild(track);
+    subtitles.push({ kind: 'captions', label: 'English', srclang: 'en', src: subtitleUrl, default: true });
   }
 
   if (!window.plyrInstance) {
@@ -1003,13 +987,11 @@ function openVideo(src, useResume=false){
         }
       };
 
-      // Apply immediately and aggressively
       enforceFullscreenSizing();
       setTimeout(enforceFullscreenSizing, 50);
       setTimeout(enforceFullscreenSizing, 100);
       setTimeout(enforceFullscreenSizing, 200);
 
-      // Keep enforcing every 100ms while in fullscreen
       const enforcerInterval = setInterval(() => {
         if (!document.querySelector('.plyr--fullscreen')) {
           clearInterval(enforcerInterval);
@@ -1080,36 +1062,53 @@ function openVideo(src, useResume=false){
         });
       }
     }, 500);
-  } else {
-    const subtitles = [];
-    if(currentMovie && currentMovie.subtitles && currentMovie.subtitles.length > 0){
-      const subtitleUrl = fileUrl(currentMovie.subtitles[0].path);
-      subtitles.push({ kind: 'captions', label: 'English', srclang: 'en', src: subtitleUrl, default: true });
-    }
-    window.plyrInstance.source = {
-      type: 'video',
-      sources: [{ src: src, type: 'video/mp4' }],
-      tracks: subtitles
-    };
   }
+
+  videoPlayer.src = src;
+  subtitles.forEach(sub => {
+    const track = document.createElement('track');
+    track.kind = sub.kind;
+    track.label = sub.label;
+    track.srclang = sub.srclang;
+    track.src = sub.src;
+    if(sub.default) track.default = true;
+    videoPlayer.appendChild(track);
+  });
+  videoPlayer.load();
 
   videoModal.style.display = 'flex';
   videoTitle.textContent = currentMovie ? currentMovie.name : '';
 
-  videoPlayer.addEventListener('loadedmetadata', function onMetadata() {
-    console.log('Video metadata loaded:', videoPlayer.videoWidth, 'x', videoPlayer.videoHeight);
-    videoPlayer.removeEventListener('loadedmetadata', onMetadata);
-  }, { once: true });
-
   if (startTime > 0) {
-    window.plyrInstance.once('canplay', () => {
-      window.plyrInstance.currentTime = startTime;
-      console.log('Resume position set to:', startTime);
-    });
+    let seekDone = false;
+    const doSeek = () => {
+      if(seekDone) return;
+      try {
+        const vid = window.plyrInstance.media || videoPlayer;
+        if(vid.readyState >= 1 && vid.duration > 0){
+          seekDone = true;
+          vid.currentTime = startTime;
+          console.log('Resume position set to:', startTime);
+        }
+      } catch(e){ console.warn('Seek failed:', e); }
+    };
+    videoPlayer.addEventListener('canplay', doSeek, { once: true });
+    videoPlayer.addEventListener('loadeddata', doSeek, { once: true });
+    setTimeout(doSeek, 500);
+    setTimeout(doSeek, 1500);
+    setTimeout(doSeek, 3000);
   }
 
   startAutosave();
-  window.plyrInstance.play().catch(e => console.warn('Play failed:', e));
+
+  const doPlay = () => {
+    window.plyrInstance.play().catch(e => console.warn('Play failed:', e));
+  };
+  if(videoPlayer.readyState >= 3){
+    doPlay();
+  } else {
+    videoPlayer.addEventListener('canplay', doPlay, { once: true });
+  }
 }
 function closeVideo(){
   try{ saveNow(); }catch(e){}
@@ -1254,7 +1253,6 @@ window.addEventListener('hashchange', ()=> handleHashNavigation(getHashParam()))
   try {
     await loadLibrary();
 
-    // NEW: ensure toolbar sits below the header on all screen sizes
     function updateToolbarTop(){
       try {
         const headerEl = document.querySelector('header');
@@ -1262,15 +1260,13 @@ window.addEventListener('hashchange', ()=> handleHashNavigation(getHashParam()))
         if(!headerEl || !toolbarEl) return;
         const h = Math.ceil(headerEl.getBoundingClientRect().height);
         toolbarEl.style.top = h + 'px';
-        // Also update CSS var (keeps the stylesheet fallback in sync)
         document.documentElement.style.setProperty('--header-height', h + 'px');
       } catch(e){ /* ignore measurement errors */ }
     }
     window.addEventListener('resize', updateToolbarTop);
     window.addEventListener('load', updateToolbarTop);
-    updateToolbarTop(); // initial set
+    updateToolbarTop();
 
-    // NEW: handle any hash present once movies[] is available
     try { handleHashNavigation(getHashParam()); } catch(e){ console.warn('hash handling failed', e); }
 
   } catch(e){
