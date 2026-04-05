@@ -2034,14 +2034,22 @@ function makeResumeNode(it, compact=false, showMarqueeForShows=false){
   // Resume item click handler
   node.addEventListener('click', ()=> {
     const p = it.path || '';
-    if((p||'').toLowerCase().includes('/movies/')) window.location.href = `/movies#open=${encodeURIComponent(p)}`;
-    else if((p||'').toLowerCase().includes('/shows/')) window.location.href = `/shows#open=${encodeURIComponent(p)}`;
-    else if((p||'').toLowerCase().includes('/music/')) window.location.href = `/music#play=${encodeURIComponent(p)}`;
-    else if((p||'').toLowerCase().includes('/gallery/')) window.location.href = `/gallery#open=${encodeURIComponent(p)}`;
-    else if((p||'').toLowerCase().includes('/books/')) {
+    const resumePos = it.position || 0;
+
+    if((p||'').toLowerCase().includes('/movies/')) {
+      window.location.href = `/movies.html#play=${encodeURIComponent(p)}`;
+    } else if((p||'').toLowerCase().includes('/shows/')) {
+      window.location.href = `/shows.html#play=${encodeURIComponent(p)}`;
+    } else if((p||'').toLowerCase().includes('/music/')) {
+      window.location.href = `/music#play=${encodeURIComponent(p)}`;
+    } else if((p||'').toLowerCase().includes('/gallery/')) {
+      window.location.href = `/gallery#open=${encodeURIComponent(p)}`;
+    } else if((p||'').toLowerCase().includes('/books/')) {
       const url = p.startsWith('/') ? p : '/' + p;
       window.location.href = url;
-    } else window.location.href = (p.startsWith('/') ? p : '/' + p);
+    } else {
+      window.location.href = (p.startsWith('/') ? p : '/' + p);
+    }
   });
 
   return node;
