@@ -448,21 +448,93 @@ function updateLoopButtonUI(){
 }
 
 
+let _playDebounce = null;
+let _playGeneration = 0;
+let _lastLoadTime = 0;
+let _retryTimer = null;
+let _retrying = false;
+const _MIN_LOAD_GAP = 300;
+const _MAX_RETRIES = 2;
 
-function playTrack(track){
+function playTrack(track, _retryCount){
+  _retryCount = _retryCount || 0;
   if(!track || !track.path){
     console.warn('[Music] Invalid track:', track);
     return;
   }
+
+  if(_retryCount === 0){
+    _playGeneration++;
+    clearTimeout(_retryTimer);
+    _retrying = false;
+  }
+  const gen = _playGeneration;
+
+  clearTimeout(_playDebounce);
+
+  audio.pause();
+  audio.removeAttribute('src');
+  audio.load();
+
   currentTrack = track;
-  playerTitle.textContent = track.name || 'Unknown';
-  audio.src = `/media?file=${encodeURIComponent(track.path)}`;
-  audio.play().catch(e => {
-    console.warn('[Music] Play failed:', e);
-    playerTitle.textContent = 'Error loading track';
-  });
-  broadcastPlaybackUpdate();
-  saveState();
+  if(_retryCount === 0){
+    playerTitle.textContent = track.name || 'Unknown';
+  }
+
+  const now = Date.now();
+  const elapsed = now - _lastLoadTime;
+  const delay = _retryCount > 0 ? 2000 * _retryCount : Math.max(200, _MIN_LOAD_GAP - elapsed);
+
+  _playDebounce = setTimeout(() => {
+    if(gen !== _playGeneration) return;
+    _lastLoadTime = Date.now();
+    const url = `/media?file=${encodeURIComponent(track.path)}`;
+    fetch(url, { method: 'HEAD' }).then(resp => {
+      if(gen !== _playGeneration) return;
+      if(resp.status === 404){
+        _retrying = false;
+        playerTitle.textContent = 'Track not found';
+        console.warn('[Music] Track not found on device:', track.path);
+        return;
+      }
+      if(!resp.ok){
+        throw new Error('Server error: ' + resp.status);
+      }
+      audio.src = url;
+      audio.load();
+      audio.play().catch(e => {
+        if(gen !== _playGeneration) return;
+        console.warn('[Music] Play failed:', e);
+        if(_retryCount < _MAX_RETRIES){
+          _retrying = true;
+          playerTitle.textContent = (track.name || 'Unknown') + ' (retrying...)';
+          _retryTimer = setTimeout(() => {
+            if(gen !== _playGeneration) return;
+            playTrack(track, _retryCount + 1);
+          }, 2000 * (_retryCount + 1));
+        } else {
+          _retrying = false;
+          playerTitle.textContent = 'Error loading track';
+        }
+      });
+    }).catch(e => {
+      if(gen !== _playGeneration) return;
+      console.warn('[Music] HEAD check failed:', e);
+      if(_retryCount < _MAX_RETRIES){
+        _retrying = true;
+        playerTitle.textContent = (track.name || 'Unknown') + ' (retrying...)';
+        _retryTimer = setTimeout(() => {
+          if(gen !== _playGeneration) return;
+          playTrack(track, _retryCount + 1);
+        }, 2000 * (_retryCount + 1));
+      } else {
+        _retrying = false;
+        playerTitle.textContent = 'Error loading track';
+      }
+    });
+    broadcastPlaybackUpdate();
+    saveState();
+  }, delay);
 }
 
 function playAtIndex(index, playlist){
@@ -731,9 +803,11 @@ audio.addEventListener('pause', () => {
 audio.addEventListener('ended', handleNext);
 
 audio.addEventListener('error', (e) => {
+  if(!audio.src || audio.src === '' || audio.src === location.href) return;
+  if(_retrying) return;
   console.error('[Music] Audio error:', e);
+  _retrying = false;
   playerTitle.textContent = 'Error loading track';
-  showToast('Failed to load track');
 });
 
 playBtn.addEventListener('click', () => {
