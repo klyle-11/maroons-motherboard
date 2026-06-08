@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Maroon's Motherboard</title>
+  <style>
+    /* ---------- THEMES ---------- */
+    /* Default theme: Nomad Dark */
+    :root {
+      --bg: #0e0e10;
+      --fg: #e6e6e6;
+      --mut: #7a7a82;
+      --acc: #ffd166;
+      --line: #222226;
+    }
+    /* Light theme */
+    body[data-theme="light"] {
+      --bg: #f5f5f7;
+      --fg: #1e1e20;
+      --mut: #6c6c72;
+      --acc: #d97706;
+      --line: #d4d4d8;
+    }
+    /* Sepia theme (warm, book-like) */
+    body[data-theme="sepia"] {
+      --bg: #faf0e1;
+      --fg: #4a3b2c;
+      --mut: #8b7355;
+      --acc: #b45309;
+      --line: #e0cfb5;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      font: 14px/1.45 ui-monospace, Menlo, Consolas, monospace;
+      background: var(--bg);
+      color: var(--fg);
+      transition: background 0.2s, color 0.2s;
+    }
+    header {
+      padding: 18px 18px 6px;
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 2;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .title-area h1 {
+      margin: 0;
+      font: 600 italic 22px/1 Georgia, serif;
+      letter-spacing: 1px;
+      color: var(--acc);
+    }
+    .title-area .sub {
+      color: var(--mut);
+      font-size: 11px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
+    button.theme-btn {
+      background: var(--line);
+      border: 1px solid var(--mut);
+      color: var(--fg);
+      font-size: 12px;
+      font-family: inherit;
+      padding: 6px 12px;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    button.theme-btn:hover {
+      background: var(--acc);
+      color: var(--bg);
+      border-color: var(--acc);
+    }
+    .crumbs {
+      padding: 10px 18px;
+      color: var(--mut);
+      border-bottom: 1px solid var(--line);
+    }
+    .crumbs a {
+      color: var(--fg);
+      text-decoration: none;
+    }
+    .crumbs a:hover {
+      color: var(--acc);
+    }
+    ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--line);
+    }
+    li:hover {
+      background: var(--line);
+      opacity: 0.8;
+    }
+    a.row {
+      flex: 1;
+      color: var(--fg);
+      text-decoration: none;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+    }
+    a.row:hover {
+      color: var(--acc);
+    }
+    .name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .size {
+      color: var(--mut);
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+    .tag {
+      font-size: 10px;
+      color: var(--mut);
+      border: 1px solid var(--line);
+      background: var(--bg);
+      padding: 2px 6px;
+      border-radius: 3px;
+      text-transform: uppercase;
+    }
+    footer {
+      padding: 14px 18px;
+      color: var(--mut);
+      font-size: 11px;
+      border-top: 1px solid var(--line);
+    }
+  </style>
+</head>
+<body data-theme="dark">
+<header>
+    <h1>Maroon's Motherboard</h1>
+    <div class="sub">Offline · Caribbean digital archive · 192.168.4.1 · Caribbean Studies Association 2026</div>
+    <button class="theme-btn" id="themeSwitcher">🌓 Theme colors</button>
+  </header>
+  <div class="crumbs" id="breadcrumb"></div>
+  <ul id="fileList"></ul>
+  <footer>tap a folder to open · tap a file to stream or download</footer>
+
+  <script>
+    // Helper: format bytes to human-readable string
+    function formatBytes(bytes) {
+      if (bytes < 1024) return bytes + " B";
+      const units = ["KB", "MB", "GB", "TB"];
+      let unitIndex = -1;
+      do {
+        bytes /= 1024;
+        unitIndex++;
+      } while (bytes >= 1024 && unitIndex < units.length - 1);
+      return bytes.toFixed(bytes < 10 ? 2 : 1) + " " + units[unitIndex];
+    }
+
+    // Helper: determine file type based on extension
+    function getFileType(fileName) {
+      const extension = fileName.split('.').pop().toLowerCase();
+      const typeMap = {
+        // Documents
+        'pdf': 'PDF',
+        'epub': 'EPUB',
+        'txt': 'TXT',
+        'html': 'HTML',
+        'htm': 'HTML',
+        'doc': 'DOC',
+        'docx': 'DOCX',
+        'odt': 'ODT',
+        // Audio
+        'mp3': 'MP3',
+        'flac': 'FLAC',
+        'wav': 'WAV',
+        'aac': 'AAC',
+        'm4a': 'M4A',
+        'ogg': 'OGG',
+        // Video
+        'mp4': 'MP4',
+        'webm': 'WEBM',
+        'mkv': 'MKV',
+        'mov': 'MOV',
+        'avi': 'AVI',
+        // Images
+        'jpg': 'JPG',
+        'jpeg': 'JPEG',
+        'png': 'PNG',
+        'gif': 'GIF',
+        'webp': 'WEBP',
+        'svg': 'SVG',
+        // Archives
+        'zip': 'ZIP',
+        'cbz': 'CBZ',
+        'cbr': 'CBR',
+        // Other
+        'json': 'JSON',
+        'xml': 'XML',
+        'js': 'JS',
+        'css': 'CSS'
+      };
+      return typeMap[extension] || 'FILE';
+    }
+
+    // Theme switcher logic
+    const themes = ['dark', 'light', 'sepia'];
+    let currentThemeIndex = 0; // dark = 0 (default)
+
+    function applyTheme(themeName) {
+      document.body.setAttribute('data-theme', themeName);
+      localStorage.setItem('nomad_theme', themeName);
+      currentThemeIndex = themes.indexOf(themeName);
+      if (currentThemeIndex === -1) currentThemeIndex = 0;
+    }
+
+    function cycleTheme() {
+      const nextIndex = (currentThemeIndex + 1) % themes.length;
+      applyTheme(themes[nextIndex]);
+    }
+
+    // Load directory listing from server
+    async function loadDirectory(currentPath) {
+      try {
+        const response = await fetch("/api/list?path=" + encodeURIComponent(currentPath));
+        if (!response.ok) {
+          document.getElementById("fileList").innerHTML = '<li style="color:#c66">Read error</li>';
+          return;
+        }
+        const data = await response.json();
+
+        // Update breadcrumb navigation
+        const breadcrumbDiv = document.getElementById("breadcrumb");
+        const pathParts = currentPath.split("/").filter(part => part.length > 0);
+        let accumulatedPath = "";
+        const breadcrumbLinks = ['<a href="#/">/</a>'];
+        for (const part of pathParts) {
+          accumulatedPath += "/" + part;
+          breadcrumbLinks.push(' / <a href="#' + accumulatedPath + '">' + part + '</a>');
+        }
+        breadcrumbDiv.innerHTML = breadcrumbLinks.join("");
+
+        // Build file list
+        const listElement = document.getElementById("fileList");
+        listElement.innerHTML = "";
+
+        // Sort: directories first, then files alphabetically
+        const sortedEntries = [...data.entries].sort((a, b) => {
+          if (a.isDirectory && !b.isDirectory) return -1;
+          if (!a.isDirectory && b.isDirectory) return 1;
+          return a.name.localeCompare(b.name);
+        });
+
+        for (const entry of sortedEntries) {
+          const listItem = document.createElement("li");
+
+          // Tag (directory or file type)
+          const tagSpan = document.createElement("span");
+          tagSpan.className = "tag";
+          if (entry.isDirectory) {
+            tagSpan.textContent = "DIR";
+          } else {
+            tagSpan.textContent = getFileType(entry.name);
+          }
+
+          // Link (row)
+          const link = document.createElement("a");
+          link.className = "row";
+
+          // File/folder name
+          const nameSpan = document.createElement("span");
+          nameSpan.className = "name";
+          nameSpan.textContent = entry.name + (entry.isDirectory ? "/" : "");
+
+          // Size (empty for directories)
+          const sizeSpan = document.createElement("span");
+          sizeSpan.className = "size";
+          sizeSpan.textContent = entry.isDirectory ? "" : formatBytes(entry.size || 0);
+
+          link.appendChild(nameSpan);
+          link.appendChild(sizeSpan);
+
+          // Set link behavior
+          if (entry.isDirectory) {
+            link.href = "#" + entry.path;
+          } else {
+            link.href = "/file?path=" + encodeURIComponent(entry.path);
+            link.target = "_blank";
+          }
+
+          listItem.appendChild(tagSpan);
+          listItem.appendChild(link);
+          listElement.appendChild(listItem);
+        }
+
+        if (sortedEntries.length === 0) {
+          listElement.innerHTML = '<li style="color:var(--mut)">empty directory</li>';
+        }
+      } catch (error) {
+        console.error("Failed to load directory:", error);
+        document.getElementById("fileList").innerHTML = '<li style="color:#c66">Network error</li>';
+      }
+    }
+
+    // Route handler: read hash and load corresponding path
+    function handleRouting() {
+      const rawPath = location.hash.slice(1) || "/";
+      loadDirectory(rawPath);
+    }
+
+    // Initialize theme from localStorage (if any)
+    const savedTheme = localStorage.getItem('nomad_theme');
+    if (savedTheme && themes.includes(savedTheme)) {
+      applyTheme(savedTheme);
+    } else {
+      applyTheme('dark');
+    }
+
+    // Set up theme switcher button
+    const themeBtn = document.getElementById('themeSwitcher');
+    themeBtn.addEventListener('click', cycleTheme);
+
+    // Set up routing
+    window.addEventListener("hashchange", handleRouting);
+    handleRouting();
+  </script>
+</body>
+</html>

@@ -1,309 +1,40 @@
-# <div align="center">Jcorp Nomad</div>
+# mm26-nomad
 
-<div align="center">
-  <img src="NomadCover.png" alt="Jcorp Nomad Offline Media Server" width="800">
-</div>
+Offline media captive portal for the **LILYGO TTGO LoRa32 T3 v1.6.1**. Acts as a sister firmware to **stock Meshtastic** — hold the BOOT button to switch between them at boot.
 
-<p align="center"><b>A portable, offline media server powered by the ESP32-S3 in a thumbdrive form factor.</b><br>
-Stream movies, music, books, and shows anywhere - no internet required.</p>
+The original Jcorp Nomad source it's spiritually based on lives in [`jcorp-nomad/`](./jcorp-nomad/) for reference; it does **not** run on this board (different SoC, display, and SD controller).
 
-<p align="center">
-  <img src="https://img.shields.io/badge/release-Mk3-red.svg" alt="Release: Mk3" />
-  <img src="https://img.shields.io/badge/license-CC--BY--NC--SA%204.0-blue.svg" alt="License: CC BY-NC-SA 4.0" />
-  <img src="https://img.shields.io/badge/platform-ESP32--S3-orange" alt="Platform: ESP32-S3" />
-  <img src="https://img.shields.io/badge/status-stable-brightgreen" alt="Status: Stable" />
-</p>
+## What it does (Nomad mode)
 
-<p align="center">
-  <a href="https://nomad.jcorptech.net"><b>Buy a Prebuilt Nomad</b></a> &nbsp;|&nbsp;
-  <a href="https://ko-fi.com/jcorptech"><b>Support on Ko-fi</b></a>
-</p>
+- Open WiFi AP `NOMAD-AP` (no password, 2 clients).
+- Captive portal: every OS pops the "join network" sheet straight into the file browser.
+- File browser at `http://192.168.4.1/` serving from the SD card with HTTP range requests, so video/audio seek and resume work.
+- 128×64 SSD1306 display:
+  - Ham-radio-dial intro animation.
+  - Dashboard: italic title, dial-needle client gauge, rotating tagline, AP/clients footer.
+  - Idle screensaver: rain alternating with a waving Jamaica flag (monochrome).
 
----
+## Board layout (T3 v1.6.1)
 
-> **Mk3 Release** - The experimental branch has been merged into main. This is the new stable baseline with all Mk3 features. Testing is ongoing, but everything is running stable so far.
+| Peripheral | Pins |
+|---|---|
+| SD (SPI)   | CS 13 · MOSI 15 · MISO 2 · SCK 14 |
+| OLED (I²C) | SDA 21 · SCL 22 · RST 16 · addr 0x3C |
+| LoRa (idle)| CS 18 (held HIGH so the SX1276 stays off the bus) |
+| Button     | GPIO 0 (BOOT) |
 
----
-
-## What is Nomad
-
-Jcorp Nomad is an open-source offline media server designed for travel, remote work, classrooms, camping, and more. It runs entirely on an ESP32-S3, creates a local Wi-Fi hotspot, and serves media through a browser interface. Multiple users can access separate media streams simultaneously, all without internet access.
-
-This project is compact, easy to modify, and includes optional 3D-printable hardware. Both firmware and web interface are fully open-source.
-
----
-
-## Get a Nomad
-
-### Build It Yourself (Recommended)
-
-I strongly recommend building your own Nomad. It's not a very difficult project, if you can follow instructions and plug in a USB cable, you can do it. The parts are cheap, widely available, and the whole build takes under an hour. See Hardware Requirements and Quick Start below. If nothing else please check out the DIY option before purchasing. 
-
-### Buy a Prebuilt
-
-That said, I also won't say no to money. If you'd rather skip the DIY and get a ready-to-go unit, prebuilt Nomads are available at **[nomad.jcorptech.net](https://nomad.jcorptech.net)**.
-
-Every Nomad, whether you build it or buy it, runs the same open-source firmware and web interface. When new features and updates are released, you can always flash the latest code yourself to stay up to date. This project isn't going anywhere.
-
-### Support Development
-
-If you just want to support the project, donations are always appreciated:  
-**[ko-fi.com/jcorptech](https://ko-fi.com/jcorptech)**
-
----
-
-## Mk3 Highlights
-
-### Plyr Integration
-- Replaced native browser video elements with the **Plyr** library
-- Consistent playback UI across all devices
-- Fixes playback issues on Apple hardware
-
-### Theme Customization
-- New **Theme Control Panel** in the Admin Console
-- Expanded to **28 preset themes** 
-- Full **custom theme editor** for manual color adjustments
-- Mobile-optimized with compact layout and touch-friendly controls
-
-### Music Overhaul & Queue
-- Seamless playback across Songs, Playlists, and Queue
-- New **Queue system** - add tracks from any music page, reorder or remove dynamically
-- Search results link directly to the queue
-
-### Books & Comics
-- **PDF Viewer** - dedicated page with **progressive loading** for large files
-- **EPUB Reader** - cleaned up and stable, prevents crashes on low-memory devices (still not recommended over PDF, but it works)
-- **Comic Reader** - supports webtoon **infinite scroll** and standard page mode, works with raw CBZ files
-
-### Search & Performance
-- Menu search uses **cached indices** for much faster results
-- Themes loaded from `/.system-theme.json` for system-wide consistency
-
-### Default Themes (28)
-
-Default Blue, Forest Night, Cherry Blossom, Mocha Latte, Ocean Depths,
-Autumn Leaves, Lavender Fields, Sunset Horizon, Coral Reef, Mountain Mist,
-Jade Garden, Desert Sand, Arctic Aurora, DeLorean, Midnight Code, 90s Retro,
-Mint Breeze, Rose Gold, Crimson Night, Emerald Dream, Royal Purple,
-Copper Sunset, Sapphire Sea, Peach Cream, Slate Storm, Lime Zest,
-Burgundy Wine, Teal Oasis
-
----
-
-## Features
-
-- **Admin Panel:** Full device controls, library indexing, Theme Customizer.
-- **File Browser:** Upload, rename, delete, download, and inline file editing. (Recommended to use a PC)
-- **Global Search:** Quickly find media across all categories from the Menu page.
-- **Music Player:** Seamless background playback with subdirectory playlists and a dynamic Queue.
-- **Movies & Shows:** Plyr-integrated playback with season/special folder support.
-- **Digital Library:** EPUB support, PDF handling, and a dedicated Comic/Webtoon reader.
-- **Resume Tracking:** Saves playback progress for Movies, Shows, and certain Books.
-- **Gallery & Files:** Dedicated pages for image viewing, video clips, and general file sharing.
-- **Captive Portal:** Automatic login/redirection for easy access.
-- **Persistent Settings:** Themes and system configurations saved across reboots.
-- **Mobile-Friendly UI:** Fully responsive design optimized for handheld offline streaming.
-
----
-
-## Hardware Compatibility
-
-Nomad is built specifically for the **Waveshare ESP32-S3 Dev Board (1.47" LCD version)**. Due to the number of low-level tricks used to squeeze this much functionality out of the hardware, it is difficult to get Nomad running on other boards.
-
-There are a few community forks that target other ESP32 boards, but your mileage will vary. Now that Nomad is stable on Mk3, I plan to develop a **Nomad Lite** version with wider board compatibility, focused on basic streaming without all the advanced features.
-
----
-
-## Hardware Requirements
-
-- **Waveshare ESP32-S3 Dev Board (1.47" LCD version)**
-  [Amazon Link](https://amzn.to/4ktB6oT)
-
-- **FAT32 microSD card (16-128GB recommended, up to 2TB)**
-  [Amazon Link](https://amzn.to/44tM1c4)
-
-- **SD-Card Extender (optional, 3DP case compatible)**
-  [Amazon Link](https://amzn.to/45IWIJz)
-
-- **USB power source**
-- **Optional:** 3D-printed enclosure (STL files included)
-
----
-
-## Software Requirements
-
-- Arduino IDE
-- Fat32Format or equivalent
-- SquareLine Studio (optional, for UI editing)
-
----
-
-## Quick Start
-
-1. Flash ESP32-S3 firmware from `/firmware/`.
-2. Format SD card as FAT32 and copy `/SD_Card_Template/` files.
-3. Place media in `/Movies`, `/Shows`, `/Books`, `/Music`, `/Gallery`, `/Files`.
-4. Insert SD card and power device via USB.
-5. Connect to Wi-Fi `Jcorp_Nomad` with password: `password`.
-6. Open the browser interface.
-7. Click the gear icon → Library Index → **Full Scan Now**.
-8. Monitor Admin Console for progress; scan may take minutes.
-9. Return to Menu page and enjoy your media!
-
----
-
-## Key Improvements
-
-1. **Faster & More Reliable Indexing**
-   - Non-blocking, background indexing for large libraries.
-   - Safe on power loss; partial indexes remain intact.
-   - Auto-updates changes; frontend detects updates automatically.
-
-2. **Resume Functionality**
-   - Movies and Shows track playback progress.
-   - Options for **Play from Start** or **Resume**.
-   - Menu displays last three movies/shows; mobile shows most recent.
-
-3. **Dark Mode**
-   - Toggleable across all pages from the menu.
-
-4. **Admin Page**
-   - Full device control: shutdown, restart, flash mode, Wi-Fi, RGB LEDs, brightness, credentials, indexing, and file management.
-   - Safe shutdown option for SD card health.
-   - Real-time system console feedback.
-
-5. **Stability Improvements**
-   - Fixed frontend NDJSON sync issues.
-   - Crash recovery on large indexes.
-   - Dynamic LCD brightness adjustment.
-   - Streaming stability enhancements.
-
-6. **Improved Library Support**
-   - Supports deeper folder structures for Shows and Music.
-   - Flexible organization; media files can be nested at any level.
-
----
+## Build & flash (PlatformIO)
 
 ```
-Folder Structure
-
-/Movies
-    Interstellar.mp4
-    Interstellar.jpg
-
-/Shows
-    /The Office
-        S01E01 - Pilot.mp4
-        S01E02 - Diversity Day.mp4
-    The Office.jpg
-
-    /Gravity Falls
-        /Season 1
-            S1E1 - Tourist Trapped.mp4
-            S1E2 - The Legend of the Gobblewonker.mp4
-        /Season 2
-            S2E1 - Scary-oke.mp4
-            S2E2 - Into the Bunker.mp4
-        Alex Hirsch Interview.mp4
-    Gravity Falls.jpg
-
-/Books
-    The Martian.pdf
-    The Martian.jpg
-    /How to Train Your Dragon
-        book1.pdf
-        book2.mp3
-        book1.jpg
-        book2.jpg
-    How to Train Your Dragon.jpg
-
-/Music
-    track01.mp3
-    /Artist1
-        track01.mp3
-        /Album1
-            track02.mp3
-    /PersonName
-        /Playlist1
-            track01.mp3
-        /Playlist2
-            track02.mp3
-
-/Gallery
-    image01.jpg
-    video01.mp4
-
-/Files
-    document.pdf
-    example.txt
-
-index.html
-appleindex.html
-menu.html
-movies.html
-shows.html
-books.html
-music.html
-gallery.html
-files.html
-Logo.png
-favicon.ico
+pio run -t upload && pio device monitor
 ```
 
----
+## Switching firmware
 
-## Supported Formats
+Stock Meshtastic gets flashed to **OTA slot 0**; this Nomad sketch lives in **OTA slot 1**. On any boot, hold the BOOT button for ~1.5 s — the screen confirms, then reboots into Meshtastic. From Meshtastic side, flash this firmware again with `pio run -t upload` to return.
 
-- **Video:** `.mp4, .mov, .mkv, .webm`
-- **Audio:** `.mp3, .flac, .wav`
-- **Books:** `.pdf, .epub, .mp3, .cbz`
-- **Images:** `.jpg`
+If OTA slot 0 has no valid Meshtastic image, the switch is refused and the device stays in Nomad mode (with a brief on-screen warning).
 
----
+## SD card layout
 
-## 3D Printed Case Files
-
-- [Thingiverse](https://www.thingiverse.com/thing:7223398)
-
----
-
-## What's Next
-
-**Nomad Lite** - A stripped-down version of Nomad with wider board compatibility, focused on core streaming features. Now that Mk3 is stable, this is the next priority.
-
-**Nomad Manager** - A companion application for Nomad that integrates with Jellyfin to handle automated media downcoding and transfers. Keep your Nomad stocked and ready to go without manual file management.
-
-**Gallion** - A larger-scale sibling to Nomad, built on more capable hardware. Gallion is designed to handle everything that couldn't fit on Nomad's current platform > ZIM file support, ROM emulation, 4k video, and expanded media compatibility across the board. The current version is [here](https://github.com/Jstudner/Gallion).
-
----
-
-## Project Inspiration
-
-Inspired by my experience running a Jellyfin server, I wanted a portable, low-cost solution for offline media streaming. Challenges with SBCs (Raspberry Pi, etc.) included high power usage, heat, and instability.
-
-Nomad focuses on delivering:
-
-- Offline access
-- Wide device compatibility
-- Simple frontend for media browsing and playback
-- Multiple user support
-- High customization potential
-
-The ESP32-S3 provides enough performance to handle these requirements efficiently, in a pocket-sized form factor.
-
----
-
-## License
-
-[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) - free to remix and share for non-commercial use with attribution.
-
----
-
-## Credits
-
-Developed by **Jackson Studner (Jcorp Tech)**.
-Inspired by open-source offline media projects. Contributions via PRs welcome.
-
-<p align="center">
-  <a href="https://ko-fi.com/jcorptech"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support on Ko-fi"></a>
-</p>
+Anything. Files are listed straight from the root of the SD; common layout is `/Movies/`, `/Music/`, `/Books/`. Dotfiles are hidden.
