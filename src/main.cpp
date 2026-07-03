@@ -217,7 +217,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Maroon's Motherboard – Offline Archive</title>
+  <title>Maroon's Motherboard – Offline Library</title>
   <style>
     :root {
       --bg: #faf0e1;
@@ -322,6 +322,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       display: flex;
       align-items: center;
       gap: 0.75rem;
+      flex-wrap: wrap;
     }
     .back-btn, .view-btn {
       background: var(--bg);
@@ -343,23 +344,60 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       letter-spacing: 0.03em;
       overflow-x: auto;
       white-space: nowrap;
-      padding: 0.5rem 1rem;
+      padding: 0.5rem 0;
     }
     .breadcrumb a {
       color: var(--text);
       text-decoration: none;
     }
     .breadcrumb a:hover { color: var(--acc); }
-    .layout { max-width: 1200px; margin: 0 auto; padding: 0 1rem 1rem; }
+    .layout {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 1rem;
+      display: flex;
+      gap: 1.5rem;
+      flex-wrap: wrap;
+    }
+    .col-left {
+      flex: 2;
+      min-width: 0;
+    }
+    .record {
+      flex: 1;
+      min-width: 220px;
+      background: var(--surface);
+      border: 3px solid var(--border);
+      padding: 1rem;
+      height: fit-content;
+    }
+    .record-title {
+      font-weight: 900;
+      text-transform: uppercase;
+      font-size: 1.05rem;
+      letter-spacing: -0.01em;
+      color: var(--acc);
+      margin-bottom: 1rem;
+    }
+    .record-dl {
+      display: grid;
+      grid-template-columns: minmax(86px, 36%) 1fr;
+      gap: 0.55rem 0.9rem;
+      font-size: 0.82rem;
+    }
+    .record-dl dt { font-weight: 800; text-transform: uppercase; text-align: right; }
+    .record-dl dd { margin: 0; line-height: 1.45; }
     .grid-view {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
       gap: 0.75rem;
+      margin-top: 0.5rem;
     }
     .table-view {
       width: 100%;
       border-collapse: collapse;
       font-size: 0.8rem;
+      margin-top: 0.5rem;
     }
     .table-view th, .table-view td {
       padding: 0.75rem 0.8rem;
@@ -394,22 +432,27 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 2.1rem;
+      font-size: 2.5rem;
     }
     .info { padding: 0.5rem 0.5rem 0.7rem; }
     .title {
       font-weight: 800;
-      font-size: 0.8rem;
+      font-size: 0.75rem;
       text-transform: uppercase;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
     .subtitle {
-      font-size: 0.62rem;
+      font-size: 0.6rem;
       font-weight: 700;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.05em;
       text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .music-meta {
+      font-size: 0.6rem;
+      margin-top: 0.2rem;
       color: var(--text-muted);
     }
     footer {
@@ -424,38 +467,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       margin-top: 1rem;
     }
     footer strong { color: var(--acc); }
-    /* Security modal */
-    .security-modal {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.6);
-      backdrop-filter: blur(4px);
-      z-index: 3000;
-      justify-content: center;
-      align-items: center;
-      padding: 1.5rem;
-    }
-    .security-modal.show { display: flex; }
-    .security-card {
-      background: var(--acc);
-      color: #fff;
-      border: 3px solid #111;
-      max-width: 440px;
-      width: 100%;
-      padding: 2rem 1.75rem;
-    }
-    .security-card h2 {
-      font-size: 1.7rem;
-      font-weight: 900;
-      text-transform: uppercase;
-      line-height: 0.95;
-      letter-spacing: -0.02em;
-      margin-bottom: 0.8rem;
-    }
-    .security-card p { font-size: 0.9rem; line-height: 1.5; margin-bottom: 1.5rem; }
-    .security-card button { background: #111; color: #fff; border: none; padding: 0.8rem 1.7rem; font-weight: 800; text-transform: uppercase; cursor: pointer; }
-    /* File modal */
+    /* Modal */
     .modal {
       display: none;
       position: fixed;
@@ -468,7 +480,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .modal-content {
       background: var(--surface);
       width: 100%;
-      height: 100%;
+      height: auto;
       max-width: 600px;
       max-height: 80%;
       display: flex;
@@ -494,10 +506,9 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .close-modal { background: transparent; border: none; font-size: 2rem; line-height: 1; cursor: pointer; color: #fff; padding: 0 0.25rem; }
+    .close-modal { background: transparent; border: none; font-size: 2rem; line-height: 1; cursor: pointer; color: #fff; }
     .modal-actions {
       display: flex;
-      gap: 0;
       border-bottom: 3px solid var(--border);
     }
     .modal-actions button, .modal-actions a {
@@ -513,6 +524,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       text-transform: uppercase;
       letter-spacing: 0.05em;
       flex: 1;
+      text-align: center;
     }
     .modal-actions button:hover, .modal-actions a:hover { background: var(--acc); color: #fff; }
     .modal-body { flex: 1; overflow: auto; padding: 1.25rem; }
@@ -529,15 +541,28 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     .loading-fill { height: 100%; width: 0%; background: var(--acc); transition: width .15s ease; }
     .loading-track.indeterminate .loading-fill { width: 40%; position: absolute; left: -40%; animation: loadSlide 1.1s infinite ease-in-out; }
     @keyframes loadSlide { 0% { left: -40%; } 100% { left: 100%; } }
-    .loading-label { margin-top: 0.5rem; font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; text-align: center; }
-    .cancel-btn { display: block; margin: 0.7rem auto 0; background: #111; color: #fff; border: 2px solid var(--border); padding: 0.5rem 1.2rem; font-size: 0.72rem; font-weight: 800; text-transform: uppercase; cursor: pointer; }
+    .loading-label { margin-top: 0.5rem; font-size: 0.75rem; font-weight: 800; text-align: center; }
+    .cancel-btn { display: block; margin: 0.7rem auto 0; background: #111; color: #fff; border: 2px solid var(--border); padding: 0.5rem 1.2rem; font-size: 0.72rem; font-weight: 800; cursor: pointer; }
+    /* Reader container for modal */
+    .reader-container {
+      width: 100%;
+      height: 70vh;
+      background: #fff;
+      margin-top: 1rem;
+    }
+    .reader-container iframe, .reader-container embed {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
     @media (min-width: 600px) {
       .masthead { padding-left: 3.25rem; min-height: 260px; }
       .rail { width: 2.75rem; font-size: 0.8rem; }
       .grid-view { gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
-      .modal-content { width: 92%; height: auto; }
+      .modal-content { width: 90%; }
     }
   </style>
+  <script src="/assets/epub.js"></script>
 </head>
 <body data-theme="light">
   <header class="masthead">
@@ -549,7 +574,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       </div>
     </div>
     <h1>Maroon's<br>Motherboard</h1>
-    <h4>Offline archive · All files from SD card</h4>
+    <h4>Offline Library – PDF/EPUB reader for /library, music metadata for other folders</h4>
   </header>
   <div class="controls-row">
     <div class="nav-group">
@@ -562,27 +587,30 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     </div>
   </div>
   <div class="layout">
-    <div id="content"></div>
+    <div class="col-left">
+      <div id="content"></div>
+    </div>
+    <aside id="record" class="record" style="display:none;"></aside>
   </div>
   <footer>Offline archive · Connect to <strong>MM-2026</strong> · No internet required</footer>
 
-  <!-- Security modal -->
-  <div id="securityModal" class="security-modal">
-    <div class="security-card">
-      <h2>Maroon's Motherboard cyber security statement</h2>
+  <!-- Security modal (first visit) -->
+  <div id="securityModal" class="modal" style="background:rgba(0,0,0,0.8);z-index:3000;">
+    <div class="security-card" style="background: var(--acc); color:#fff; border:3px solid #111; max-width:440px; padding:2rem;">
+      <h2 style="font-size:1.7rem;">Maroon's Motherboard</h2>
       <p>This is an offline local network library. The connection is secure, WPA2 password protected, encrypted and private.</p>
-      <button id="enterLibraryBtn">Enter library</button>
+      <button id="enterLibraryBtn" style="background:#111; color:#fff; border:none; padding:0.8rem 1.7rem; font-weight:800;">Enter library</button>
     </div>
   </div>
 
-  <!-- File modal (download only, no inline reader) -->
+  <!-- File modal -->
   <div id="fileModal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
         <h3 id="modalTitle">File details</h3>
         <button class="close-modal" id="closeModalBtn">&times;</button>
       </div>
-      <div class="modal-actions">
+      <div class="modal-actions" id="modalActions">
         <a id="downloadBtn" href="#" target="_blank">Download</a>
       </div>
       <div class="modal-body">
@@ -592,19 +620,20 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           <button id="cancelDownload" class="cancel-btn" style="display:none;">Cancel</button>
         </div>
         <div class="metadata" id="metadataDiv"></div>
+        <div id="readerContainer" style="display:none;" class="reader-container"></div>
       </div>
     </div>
   </div>
 
   <script>
-    // Security modal (once per device)
+    // Security modal once
     (function() {
       const sec = document.getElementById('securityModal');
       const btn = document.getElementById('enterLibraryBtn');
-      if (!localStorage.getItem('libraryWelcomeSeen')) sec.classList.add('show');
+      if (!localStorage.getItem('libraryWelcomeSeen')) sec.style.display = 'flex';
       btn.addEventListener('click', () => {
         localStorage.setItem('libraryWelcomeSeen', '1');
-        sec.classList.remove('show');
+        sec.style.display = 'none';
       });
     })();
 
@@ -625,26 +654,30 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     });
 
     // Global state
-    let currentPath = '/';           // start at SD card root
-    let viewMode = 'grid';           // 'grid' or 'table'
-    let currentFile = null;          // { name, path, size, type }
+    let currentPath = '/library';
+    let viewMode = 'grid';
+    let currentFile = null;
+    let currentMeta = null;
+    let activeXhr = null;
+    let isLibraryMode = true;  // true when path starts with /library
 
     const contentDiv = document.getElementById('content');
     const backBtn = document.getElementById('backBtn');
     const breadcrumbDiv = document.getElementById('breadcrumb');
     const gridViewBtn = document.getElementById('gridViewBtn');
     const tableViewBtn = document.getElementById('tableViewBtn');
+    const recordAside = document.getElementById('record');
     const modal = document.getElementById('fileModal');
     const modalTitle = document.getElementById('modalTitle');
     const metadataDiv = document.getElementById('metadataDiv');
     const downloadBtn = document.getElementById('downloadBtn');
     const closeModalBtn = document.getElementById('closeModalBtn');
+    const modalActions = document.getElementById('modalActions');
+    const readerContainer = document.getElementById('readerContainer');
     const loadingBar = document.getElementById('loadingBar');
     const loadingFill = document.getElementById('loadingFill');
     const loadingLabel = document.getElementById('loadingLabel');
     const cancelDownloadBtn = document.getElementById('cancelDownload');
-
-    let activeXhr = null;
 
     function formatBytes(b) {
       if (b < 1024) return b + " B";
@@ -660,29 +693,102 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     }
 
     function getFileIcon(ext) {
-      const icons = {
-        pdf: '📄', epub: '📖', mp3: '🎵', mp4: '🎬', mov: '🎬',
-        jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️',
-        txt: '📃', html: '🌐', css: '🎨', js: '⚙️', zip: '🗜️'
-      };
+      const icons = { pdf:'📄', epub:'📖', mp3:'🎵', flac:'🎵', ogg:'🎵', wav:'🎵', m4a:'🎵',
+                      mp4:'🎬', mov:'🎬', jpg:'🖼️', jpeg:'🖼️', png:'🖼️', gif:'🖼️',
+                      txt:'📃', html:'🌐', css:'🎨', js:'⚙️', zip:'🗜️' };
       return icons[ext.toLowerCase()] || '📁';
     }
 
-    // Show file modal with metadata + download button (no inline reader)
-    function showFileModal(file) {
+    function isMusicFile(ext) { return ['mp3','flac','ogg','wav','m4a'].includes(ext.toLowerCase()); }
+    function isBookFile(ext) { return ['pdf','epub'].includes(ext.toLowerCase()); }
+
+    // Load meta.json from current path
+    async function loadMetaForPath(path) {
+      try {
+        const resp = await fetch(`/file?path=${encodeURIComponent(path + '/meta.json')}`);
+        if (!resp.ok) throw new Error();
+        const meta = await resp.json();
+        currentMeta = meta;
+        if (meta.record && typeof meta.record === 'object') {
+          let html = '';
+          if (meta.heading) html += `<div class="record-title">${escapeHtml(meta.heading)}</div>`;
+          html += '<dl class="record-dl">';
+          for (const [label, value] of Object.entries(meta.record)) {
+            if (value == null || value === '') continue;
+            html += `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`;
+          }
+          html += '</dl>';
+          recordAside.innerHTML = html;
+          recordAside.style.display = 'block';
+        } else {
+          recordAside.style.display = 'none';
+        }
+      } catch(e) {
+        currentMeta = null;
+        recordAside.style.display = 'none';
+      }
+    }
+
+    // Inline reader (PDF/EPUB) inside modal
+    function showReader(file) {
+      readerContainer.style.display = 'block';
+      readerContainer.innerHTML = ''; // clear
+      const url = `/file?path=${encodeURIComponent(file.path)}`;
+      if (file.type === 'pdf') {
+        const iframe = document.createElement('iframe');
+        iframe.src = url;
+        iframe.style.width = '100%';
+        iframe.style.height = '100%';
+        iframe.style.border = 'none';
+        readerContainer.appendChild(iframe);
+      } else if (file.type === 'epub' && typeof ePub !== 'undefined') {
+        const epubDiv = document.createElement('div');
+        epubDiv.id = 'epubViewerTemp';
+        epubDiv.style.width = '100%';
+        epubDiv.style.height = '100%';
+        epubDiv.style.overflow = 'auto';
+        readerContainer.appendChild(epubDiv);
+        const book = ePub(url);
+        book.renderTo('epubViewerTemp', { width: '100%', height: '100%' }).display();
+      } else {
+        readerContainer.innerHTML = '<div style="padding:1rem;">Unsupported format for inline reading. Use Download.</div>';
+      }
+    }
+
+    // Show modal: if library mode and book file, add Read button; else only Download
+    function showFileModal(file, isLibrary) {
       currentFile = file;
       modalTitle.innerText = file.name;
+      let extra = '';
+      if (file.pages) extra += `<br><strong>Pages:</strong> ${escapeHtml(String(file.pages))}`;
+      if (file.description) extra += `<br><strong>Description:</strong> ${escapeHtml(file.description)}`;
+      if (file.artist) extra += `<br><strong>Artist:</strong> ${escapeHtml(file.artist)}`;
+      if (file.album) extra += `<br><strong>Album:</strong> ${escapeHtml(file.album)}`;
+      if (file.year) extra += `<br><strong>Year:</strong> ${escapeHtml(file.year)}`;
       metadataDiv.innerHTML = `
         <strong>File:</strong> ${escapeHtml(file.name)}<br>
         <strong>Size:</strong> ${formatBytes(file.size)}<br>
-        <strong>Type:</strong> ${file.type.toUpperCase()}<br>
+        <strong>Type:</strong> ${file.type.toUpperCase()}${extra}<br>
         <strong>Path:</strong> ${escapeHtml(file.path)}
       `;
       downloadBtn.href = `/file?path=${encodeURIComponent(file.path)}`;
+      // Remove existing Read button if present
+      let readBtn = document.getElementById('readBtnModal');
+      if (readBtn) readBtn.remove();
+      readerContainer.style.display = 'none';
+      readerContainer.innerHTML = '';
+      // If library mode and book file, add Read button
+      if (isLibrary && isBookFile(file.type)) {
+        readBtn = document.createElement('button');
+        readBtn.id = 'readBtnModal';
+        readBtn.textContent = 'Read';
+        readBtn.onclick = () => showReader(file);
+        modalActions.insertBefore(readBtn, downloadBtn);
+      }
       modal.style.display = 'flex';
     }
 
-    // Download with progress bar (XHR then save)
+    // Download with progress (same as before)
     function downloadFile(file) {
       if (!file) return;
       if (activeXhr) activeXhr.abort();
@@ -749,45 +855,87 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       if (activeXhr) { activeXhr.abort(); activeXhr = null; }
       modal.style.display = 'none';
       hideLoading();
+      readerContainer.style.display = 'none';
+      readerContainer.innerHTML = '';
     };
     window.onclick = (e) => { if (e.target === modal) closeModalBtn.click(); };
+    downloadBtn.onclick = (e) => { e.preventDefault(); downloadFile(currentFile); };
 
-    // Render directory listing (entries = directories + files)
-    function renderDirectory(entries) {
+    // Render directory (grid or table)
+    function renderDirectory(entries, isLibrary) {
       const dirs = entries.filter(e => e.d).map(e => ({ name: e.n, path: e.p, isDir: true }));
-      const files = entries.filter(e => !e.d).map(e => ({ name: e.n, path: e.p, size: e.s, isDir: false, type: e.n.split('.').pop().toLowerCase() }));
+      let files = entries.filter(e => !e.d).map(e => ({
+        name: e.n, path: e.p, size: e.s, isDir: false,
+        type: e.n.split('.').pop().toLowerCase(),
+        ext: e.n.split('.').pop().toLowerCase()
+      }));
+      // Enrich with meta.json if available
+      if (currentMeta && currentMeta.files) {
+        for (const f of files) {
+          const md = currentMeta.files[f.name];
+          if (md) {
+            if (md.pages) f.pages = md.pages;
+            if (md.description) f.description = md.description;
+            if (md.artist) f.artist = md.artist;
+            if (md.album) f.album = md.album;
+            if (md.year) f.year = md.year;
+          }
+        }
+      }
 
       if (viewMode === 'grid') {
         contentDiv.innerHTML = '<div class="grid-view" id="dynamicGrid"></div>';
         const grid = document.getElementById('dynamicGrid');
-        // Folders first, then files
         const all = [...dirs, ...files];
         for (const item of all) {
           const card = document.createElement('div');
           card.className = 'card';
           const icon = item.isDir ? '📁' : getFileIcon(item.type);
-          const name = item.name.length > 30 ? item.name.substring(0,27)+'…' : item.name;
-          card.innerHTML = `<div class="cover">${icon}</div><div class="info"><div class="title">${escapeHtml(name)}</div><div class="subtitle">${item.isDir ? 'Folder' : item.type.toUpperCase()}</div></div>`;
+          let subtitle = item.isDir ? 'Folder' : item.type.toUpperCase();
+          let extraHtml = '';
+          // Only show music metadata if NOT in library mode AND it's a music file
+          if (!isLibrary && !item.isDir && isMusicFile(item.ext)) {
+            if (item.artist || item.album || item.year) {
+              extraHtml = `<div class="music-meta">${item.artist || ''} ${item.album ? '• '+item.album : ''} ${item.year ? '• '+item.year : ''}</div>`;
+            }
+          }
+          card.innerHTML = `<div class="cover">${icon}</div><div class="info"><div class="title">${escapeHtml(item.name)}</div><div class="subtitle">${subtitle}</div>${extraHtml}</div>`;
           card.addEventListener('click', () => {
             if (item.isDir) loadDirectory(item.path);
-            else showFileModal(item);
+            else showFileModal(item, isLibrary);
           });
           grid.appendChild(card);
         }
         if (!all.length) contentDiv.innerHTML = '<div style="text-align:center; padding:2rem;">Empty folder</div>';
       } else { // table view
-        let html = '<table class="table-view"><thead><tr><th>Name</th><th>Size</th><th>Type</th><th>Path</th></tr></thead><tbody>';
+        let html = '<table class="table-view"><thead><tr>';
+        if (isLibrary) {
+          html += '<th>Name</th><th>Size</th><th>Type</th><th>Path</th>';
+        } else {
+          html += '<th>Name</th><th>Artist</th><th>Album</th><th>Year</th><th>Size</th><th>Type</th><th>Path</th>';
+        }
+        html += '</tr></thead><tbody>';
         for (const dir of dirs) {
-          html += `<tr data-path="${escapeHtml(dir.path)}" data-is-dir="true"><td>${escapeHtml(dir.name)}/</td><td>—</td><td>Folder</td><td>${escapeHtml(dir.path)}</td></tr>`;
+          html += `<tr data-path="${escapeHtml(dir.path)}" data-is-dir="true"><td>${escapeHtml(dir.name)}/</td>`;
+          if (isLibrary) html += '<td>—</td><td>Folder</td>';
+          else html += '<td>—</td><td>—</td><td>—</td><td>—</td><td>Folder</td>';
+          html += `<td>${escapeHtml(dir.path)}</td></tr>`;
         }
         for (const file of files) {
-          html += `<tr data-path="${escapeHtml(file.path)}" data-name="${escapeHtml(file.name)}" data-size="${file.size}" data-type="${escapeHtml(file.type)}" data-is-dir="false">
-            <td>${escapeHtml(file.name)}</td><td>${formatBytes(file.size)}</td><td>${file.type.toUpperCase()}</td><td>${escapeHtml(file.path)}</td>
-          </tr>`;
+          const artist = file.artist ? escapeHtml(file.artist) : '—';
+          const album = file.album ? escapeHtml(file.album) : '—';
+          const year = file.year ? escapeHtml(file.year) : '—';
+          html += `<tr data-path="${escapeHtml(file.path)}" data-name="${escapeHtml(file.name)}" data-size="${file.size}" data-type="${escapeHtml(file.type)}" data-artist="${artist}" data-album="${album}" data-year="${year}" data-pages="${file.pages||''}" data-desc="${escapeHtml(file.description||'')}" data-is-dir="false">`;
+          html += `<td>${escapeHtml(file.name)}</td>`;
+          if (isLibrary) {
+            html += `<td>${formatBytes(file.size)}</td><td>${file.type.toUpperCase()}</td><td>${escapeHtml(file.path)}</td>`;
+          } else {
+            html += `<td>${artist}</td><td>${album}</td><td>${year}</td><td>${formatBytes(file.size)}</td><td>${file.type.toUpperCase()}</td><td>${escapeHtml(file.path)}</td>`;
+          }
+          html += '</tr>';
         }
         html += '</tbody></table>';
         contentDiv.innerHTML = html;
-        // attach click handlers
         document.querySelectorAll('.table-view tbody tr').forEach(row => {
           row.addEventListener('click', () => {
             const isDir = row.dataset.isDir === 'true';
@@ -797,20 +945,25 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
                 name: row.dataset.name,
                 path: row.dataset.path,
                 size: parseInt(row.dataset.size),
-                type: row.dataset.type
+                type: row.dataset.type,
+                artist: row.dataset.artist !== '—' ? row.dataset.artist : null,
+                album: row.dataset.album !== '—' ? row.dataset.album : null,
+                year: row.dataset.year !== '—' ? row.dataset.year : null,
+                pages: row.dataset.pages || null,
+                description: row.dataset.desc || null
               };
-              showFileModal(file);
+              showFileModal(file, isLibrary);
             }
           });
         });
       }
     }
 
-    // Load directory from API, update breadcrumb, handle back button
     async function loadDirectory(path) {
       currentPath = path;
-      backBtn.style.display = (path === '/' || path === '/books') ? 'none' : 'inline-block';
-      // Build breadcrumb
+      isLibraryMode = path.startsWith('/library');
+      backBtn.style.display = (path === '/library' || path === '/') ? 'none' : 'inline-block';
+      // breadcrumb
       const parts = path.split('/').filter(p => p);
       let acc = '';
       const crumbs = ['<a href="#" data-path="/">root</a>'];
@@ -825,19 +978,24 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           loadDirectory(link.dataset.path);
         });
       });
-      // Fetch listing
-      contentDiv.innerHTML = '<div style="text-align:center; padding:2rem;">Loading…</div>';
+      // load meta.json only for library mode (optional)
+      if (isLibraryMode) {
+        await loadMetaForPath(path);
+      } else {
+        recordAside.style.display = 'none';
+        currentMeta = null;
+      }
+      contentDiv.innerHTML = '<div style="text-align:center; padding:2rem;">Loading files…</div>';
       try {
         const resp = await fetch(`/api/list?path=${encodeURIComponent(path)}`);
         if (!resp.ok) throw new Error();
         const data = await resp.json();
-        renderDirectory(data.entries);
+        renderDirectory(data.entries, isLibraryMode);
       } catch(e) {
-        contentDiv.innerHTML = '<div style="text-align:center; padding:2rem; color: var(--acc);">⚠️ Failed to load directory</div>';
+        contentDiv.innerHTML = '<div style="text-align:center; padding:2rem; color: var(--acc);">⚠️ Failed to load directory.</div>';
       }
     }
 
-    // View switcher
     function setView(mode) {
       viewMode = mode;
       if (mode === 'grid') {
@@ -847,22 +1005,30 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         tableViewBtn.classList.add('active');
         gridViewBtn.classList.remove('active');
       }
-      // reload current directory to refresh view
       loadDirectory(currentPath);
     }
     gridViewBtn.onclick = () => setView('grid');
     tableViewBtn.onclick = () => setView('table');
 
-    // Back button
     backBtn.onclick = () => {
       const parts = currentPath.split('/').filter(Boolean);
       parts.pop();
-      const parent = parts.length ? '/' + parts.join('/') : '/';
+      const parent = parts.length ? '/' + parts.join('/') : '/library';
       loadDirectory(parent);
     };
 
-    // Start at root '/'
-    loadDirectory('/');
+    // Initial load: check /library existence, fallback to root
+    fetch('/api/list?path=%2Flibrary').then(r => {
+      if (!r.ok) {
+        currentPath = '/';
+        loadDirectory('/');
+      } else {
+        loadDirectory('/library');
+      }
+    }).catch(() => {
+      currentPath = '/';
+      loadDirectory('/');
+    });
   </script>
 </body>
 </html>)HTML";
