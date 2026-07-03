@@ -37,7 +37,7 @@
 // ---------- Config ----------
 static const char *AP_SSID     = "MemoryWorkersGuild-board";
 static const char *AP_PASSWORD = "Knkrumah$22";       // open AP for one-tap join
-static const uint8_t AP_MAX_CLIENTS = 4;  
+static const uint8_t AP_MAX_CLIENTS = 6;
 static const char *DOMAIN_NAME = "maroons.library";       // RAM-bound on plain ESP32
 
 static const char *DISPLAY_TITLE = "Maroon's Motherboard";
@@ -85,6 +85,37 @@ static bool switchToMeshtasticAndReboot() {
   return true;
 }
 
+// ---------- Load shedding ----------
+// With no PSRAM, 4-6 phones downloading at once can exhaust the heap. Refuse
+// new work below this floor (clients retry) instead of dying mid-response.
+static const uint32_t LOW_HEAP_FLOOR = 30000;
+static bool heapLow() { return ESP.getFreeHeap() < LOW_HEAP_FLOOR; }
+
+// ---------- Captive portal client tracking ----------
+// Once a client has loaded the portal page, answer its Android connectivity
+// probes with a real 204. Android then marks the network "validated" and keeps
+// Wi-Fi as the default route instead of sending browser traffic over mobile
+// data (which is why Androids couldn't see the library outside the sign-in
+// popup). Ring buffer keyed by client IP; only handlers in the async task
+// touch it, so no locking needed.
+static const uint8_t PORTAL_SEEN_MAX = 12;
+static uint32_t portalSeenIPs[PORTAL_SEEN_MAX];
+static uint8_t  portalSeenCount = 0;
+static uint8_t  portalSeenNext  = 0;
+
+static bool portalHasSeen(const IPAddress &ip) {
+  uint32_t v = (uint32_t)ip;
+  for (uint8_t i = 0; i < portalSeenCount; i++)
+    if (portalSeenIPs[i] == v) return true;
+  return false;
+}
+static void portalMarkSeen(const IPAddress &ip) {
+  if (portalHasSeen(ip)) return;
+  portalSeenIPs[portalSeenNext] = (uint32_t)ip;
+  portalSeenNext = (portalSeenNext + 1) % PORTAL_SEEN_MAX;
+  if (portalSeenCount < PORTAL_SEEN_MAX) portalSeenCount++;
+}
+
 // ---------- SD helpers ----------
 static bool initSD() {
   pinMode(LORA_CS, OUTPUT);
@@ -117,70 +148,106 @@ static String normalizePath(const String &raw) {
 }
 
 // ---------- Directory listing API ----------
-// Escape straight into the response (no temporary String) to avoid heap churn.
-static void jsonEscapeTo(Print &out, const String &in) {
+static void jsonEscapeTo(String &out, const String &in) {
   for (size_t i = 0; i < in.length(); ++i) {
     uint8_t c = (uint8_t)in[i];
     switch (c) {
-      case '"':  out.print("\\\""); break;
-      case '\\': out.print("\\\\"); break;
-      case '\n': out.print("\\n");  break;
-      case '\r': out.print("\\r");  break;
-      case '\t': out.print("\\t");  break;
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n";  break;
+      case '\r': out += "\\r";  break;
+      case '\t': out += "\\t";  break;
       default:
-        if (c < 0x20) { char u[7]; snprintf(u, sizeof(u), "\\u%04x", c); out.print(u); }
-        else out.write(c);
+        if (c < 0x20) { char u[7]; snprintf(u, sizeof(u), "\\u%04x", c); out += u; }
+        else out += (char)c;
     }
   }
 }
+
+static void sendBusy(AsyncWebServerRequest *req) {
+  AsyncWebServerResponse *r = req->beginResponse(503, "application/json", "{\"error\":\"busy\"}");
+  r->addHeader("Retry-After", "2");
+  req->send(r);
+}
+
+// State carried across chunked-response callbacks: the open directory handle
+// plus JSON bytes generated but not yet handed to TCP.
+struct ListState {
+  File dir;
+  String path;
+  String pending;
+  bool rootDir = false;
+  bool first = true;
+  bool done = false;
+};
 
 static void handleList(AsyncWebServerRequest *req) {
   String path = "/";
   if (req->hasParam("path")) path = normalizePath(req->getParam("path")->value());
   if (!sdReady) { req->send(503, "application/json", "{\"error\":\"sd not ready\"}"); return; }
+  if (heapLow()) { sendBusy(req); return; }
   File dir = SD.open(path);
   if (!dir || !dir.isDirectory()) {
     if (dir) dir.close();
     req->send(404, "application/json", "{\"error\":\"not a directory\"}");
     return;
   }
-  // Stream the listing instead of materializing one big String in heap.
-  AsyncResponseStream *resp = req->beginResponseStream("application/json");
-  resp->print("{\"path\":\"");
-  jsonEscapeTo(*resp, path);
-  resp->print("\",\"entries\":[");
-  const bool rootDir = path.endsWith("/");
-  bool first = true;
-  File entry;
-  while ((entry = dir.openNextFile())) {
-    String name = String(entry.name());
-    int slash = name.lastIndexOf('/');
-    if (slash >= 0) name = name.substring(slash + 1);
-    if (name.startsWith(".")) { entry.close(); continue; }
-    if (!first) resp->print(',');
-    first = false;
-    resp->print("{\"n\":\"");
-    jsonEscapeTo(*resp, name);
-    resp->print("\",\"p\":\"");
-    jsonEscapeTo(*resp, path);
-    if (!rootDir) resp->print('/');
-    jsonEscapeTo(*resp, name);
-    if (entry.isDirectory()) {
-      resp->print("\",\"d\":true}");
-    } else {
-      resp->print("\",\"d\":false,\"s\":");
-      resp->print((uint32_t)entry.size());
-      resp->print('}');
-    }
-    entry.close();
-  }
-  dir.close();
-  resp->print("]}");
+  // Chunked response: entries are generated on demand straight into the TCP
+  // buffer, so heap use stays flat no matter how many files the folder holds.
+  auto st = std::make_shared<ListState>();
+  st->dir = dir;
+  st->path = path;
+  st->rootDir = path.endsWith("/");
+  st->pending.reserve(512);
+  st->pending = "{\"path\":\"";
+  jsonEscapeTo(st->pending, path);
+  st->pending += "\",\"entries\":[";
+  AsyncWebServerResponse *resp = req->beginChunkedResponse("application/json",
+    [st](uint8_t *buf, size_t maxLen, size_t index) -> size_t {
+      (void)index;
+      while (!st->done && st->pending.length() < maxLen) {
+        File entry = st->dir.openNextFile();
+        if (!entry) {
+          st->pending += "]}";
+          st->dir.close();
+          st->done = true;
+          break;
+        }
+        String name = String(entry.name());
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0) name = name.substring(slash + 1);
+        if (name.startsWith(".")) { entry.close(); continue; }
+        if (!st->first) st->pending += ',';
+        st->first = false;
+        st->pending += "{\"n\":\"";
+        jsonEscapeTo(st->pending, name);
+        st->pending += "\",\"p\":\"";
+        jsonEscapeTo(st->pending, st->path);
+        if (!st->rootDir) st->pending += '/';
+        jsonEscapeTo(st->pending, name);
+        if (entry.isDirectory()) {
+          st->pending += "\",\"d\":true}";
+        } else {
+          st->pending += "\",\"d\":false,\"s\":";
+          st->pending += String((uint32_t)entry.size());
+          st->pending += '}';
+        }
+        entry.close();
+      }
+      size_t n = st->pending.length();
+      if (n > maxLen) n = maxLen;
+      if (n) {
+        memcpy(buf, st->pending.c_str(), n);
+        st->pending.remove(0, n);
+      }
+      return n;  // 0 only after the closing "]}" has been drained → end of body
+    });
   req->send(resp);
 }
 
 static void handleFile(AsyncWebServerRequest *req) {
   if (!sdReady) { req->send(503, "text/plain", "sd not ready"); return; }
+  if (heapLow()) { sendBusy(req); return; }
   if (!req->hasParam("path")) { req->send(400, "text/plain", "missing path"); return; }
   String path = normalizePath(req->getParam("path")->value());
   if (!SD.exists(path)) { req->send(404, "text/plain", "not found"); return; }
@@ -825,16 +892,27 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           loadDirectory(link.dataset.path);
         });
       });
-      // Fetch listing
+      // Fetch listing — retry with backoff when the board sheds load (503) or
+      // drops the connection under heavy multi-client use.
       contentDiv.innerHTML = '<div style="text-align:center; padding:2rem;">Loading…</div>';
-      try {
-        const resp = await fetch(`/api/list?path=${encodeURIComponent(path)}`);
-        if (!resp.ok) throw new Error();
-        const data = await resp.json();
-        renderDirectory(data.entries);
-      } catch(e) {
-        contentDiv.innerHTML = '<div style="text-align:center; padding:2rem; color: var(--acc);">⚠️ Failed to load directory</div>';
+      let data = null;
+      let delay = 600;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          const resp = await fetch(`/api/list?path=${encodeURIComponent(path)}`);
+          if (resp.ok) { data = await resp.json(); break; }
+          if (resp.status !== 503) break; // 404 etc. — retrying won't help
+        } catch (e) { /* network hiccup — retry */ }
+        if (currentPath !== path) return; // user navigated elsewhere meanwhile
+        if (attempt < 3) {
+          contentDiv.innerHTML = '<div style="text-align:center; padding:2rem;">Library is busy — retrying…</div>';
+          await new Promise(r => setTimeout(r, delay));
+          delay *= 2;
+        }
       }
+      if (currentPath !== path) return;
+      if (data) renderDirectory(data.entries);
+      else contentDiv.innerHTML = '<div style="text-align:center; padding:2rem; color: var(--acc);">⚠️ Failed to load directory</div>';
     }
 
     // View switcher
@@ -870,12 +948,24 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 static void sendCaptiveRedirect(AsyncWebServerRequest *req) {
   AsyncWebServerResponse *r = req->beginResponse(302, "text/plain", "");
   r->addHeader("Location", "http://" + String(DOMAIN_NAME) + "/");
+  r->addHeader("Cache-Control", "no-store");
   req->send(r);
+}
+
+// Android probes: redirect (→ sign-in popup) until the client has actually
+// loaded the portal page, then a real 204 so Android validates the network
+// and keeps routing Chrome over Wi-Fi instead of mobile data.
+static void handleAndroidProbe(AsyncWebServerRequest *req) {
+  if (portalHasSeen(req->client()->remoteIP())) req->send(204);
+  else sendCaptiveRedirect(req);
 }
 
 static void setupHttp() {
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *r){
-    r->send_P(200, "text/html; charset=utf-8", INDEX_HTML);
+    portalMarkSeen(r->client()->remoteIP());
+    AsyncWebServerResponse *resp = r->beginResponse_P(200, "text/html; charset=utf-8", INDEX_HTML);
+    resp->addHeader("Cache-Control", "public, max-age=300");
+    r->send(resp);
   });
   server.on("/api/list",   HTTP_GET, handleList);
   server.on("/api/status", HTTP_GET, handleStatus);
@@ -886,16 +976,19 @@ static void setupHttp() {
     if (url.endsWith("/")) url += "index.html";
     String path = normalizePath(url);
     if (sdReady && SD.exists(path)) {
-      String mime = mimeFor(path);
-      req->send(SD, path, mime);
+      AsyncWebServerResponse *resp = req->beginResponse(SD, path, mimeFor(path));
+      // Let phones cache assets so repeat visits don't re-pull them from SD.
+      resp->addHeader("Cache-Control", url.startsWith("/assets/")
+                      ? "public, max-age=86400" : "public, max-age=600");
+      req->send(resp);
     } else {
       sendCaptiveRedirect(req);
     }
   });
 
   // Captive portal probes
-  server.on("/generate_204",       HTTP_GET, sendCaptiveRedirect);
-  server.on("/gen_204",            HTTP_GET, sendCaptiveRedirect);
+  server.on("/generate_204",       HTTP_GET, handleAndroidProbe);
+  server.on("/gen_204",            HTTP_GET, handleAndroidProbe);
   server.on("/hotspot-detect.html",HTTP_GET, sendCaptiveRedirect);
   server.on("/library/test/success.html", HTTP_GET, sendCaptiveRedirect);
   server.on("/ncsi.txt",           HTTP_GET, sendCaptiveRedirect);
