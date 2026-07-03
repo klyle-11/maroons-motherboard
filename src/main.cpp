@@ -36,7 +36,7 @@
 
 // ---------- Config ----------
 static const char *AP_SSID     = "MemoryWorkersGuild-board";
-static const char *AP_PASSWORD = "Knkrumah$22";       // open AP for one-tap join
+static const char *AP_PASSWORD = "tay22";       // open AP for one-tap join
 static const uint8_t AP_MAX_CLIENTS = 6;
 static const char *DOMAIN_NAME = "maroons.library";       // RAM-bound on plain ESP32
 
@@ -136,6 +136,18 @@ static String mimeFor(const String &path) {
   if (p.endsWith(".pdf")) return "application/pdf";
   if (p.endsWith(".jpg") || p.endsWith(".jpeg")) return "image/jpeg";
   if (p.endsWith(".png")) return "image/png";
+  if (p.endsWith(".gif")) return "image/gif";
+  if (p.endsWith(".webp")) return "image/webp";
+  if (p.endsWith(".svg")) return "image/svg+xml";
+  if (p.endsWith(".ico")) return "image/x-icon";
+  if (p.endsWith(".mp3")) return "audio/mpeg";
+  if (p.endsWith(".m4a")) return "audio/mp4";
+  if (p.endsWith(".flac")) return "audio/flac";
+  if (p.endsWith(".ogg")) return "audio/ogg";
+  if (p.endsWith(".wav")) return "audio/wav";
+  if (p.endsWith(".mp4")) return "video/mp4";
+  if (p.endsWith(".webm")) return "video/webm";
+  if (p.endsWith(".txt")) return "text/plain; charset=utf-8";
   return "application/octet-stream";
 }
 
@@ -168,6 +180,34 @@ static void sendBusy(AsyncWebServerRequest *req) {
   AsyncWebServerResponse *r = req->beginResponse(503, "application/json", "{\"error\":\"busy\"}");
   r->addHeader("Retry-After", "2");
   req->send(r);
+}
+
+// ---------- Concurrent SD stream cap ----------
+// Each in-flight file response pins several KB of heap plus a TCP send buffer,
+// and all streams share one SPI bus. Past ~3 streams the heap floor gets hit
+// and every request — including directory listings — starts 503ing (the
+// "could not load directory" failures with several phones connected). Shed
+// file transfers early so listings keep working; clients retry with backoff.
+static const uint8_t  MAX_FILE_STREAMS = 3;
+static const uint32_t FILE_HEAP_FLOOR  = 40000;
+static volatile uint8_t activeFileStreams = 0;
+
+// Serve one SD file, counted against the stream cap. Connection: close makes
+// the socket teardown (and the onDisconnect decrement) happen right after the
+// body finishes instead of lingering on browser keep-alive.
+static void sendSdFile(AsyncWebServerRequest *req, const String &path,
+                       bool download, const char *cacheControl) {
+  if (activeFileStreams >= MAX_FILE_STREAMS || ESP.getFreeHeap() < FILE_HEAP_FLOOR) {
+    sendBusy(req);
+    return;
+  }
+  AsyncWebServerResponse *resp = req->beginResponse(SD, path, mimeFor(path), download);
+  resp->addHeader("Accept-Ranges", "bytes");
+  resp->addHeader("Connection", "close");
+  if (cacheControl) resp->addHeader("Cache-Control", cacheControl);
+  activeFileStreams++;
+  req->onDisconnect([]() { if (activeFileStreams) activeFileStreams--; });
+  req->send(resp);
 }
 
 // State carried across chunked-response callbacks: the open directory handle
@@ -247,32 +287,30 @@ static void handleList(AsyncWebServerRequest *req) {
 
 static void handleFile(AsyncWebServerRequest *req) {
   if (!sdReady) { req->send(503, "text/plain", "sd not ready"); return; }
-  if (heapLow()) { sendBusy(req); return; }
   if (!req->hasParam("path")) { req->send(400, "text/plain", "missing path"); return; }
   String path = normalizePath(req->getParam("path")->value());
-  if (!SD.exists(path)) { req->send(404, "text/plain", "not found"); return; }
   File f = SD.open(path);
   if (!f || f.isDirectory()) {
     if (f) f.close();
-    req->send(404, "text/plain", "not a file");
+    req->send(404, "text/plain", "not found");
     return;
   }
-  String mime = mimeFor(path);
   f.close();
-  AsyncWebServerResponse *resp = req->beginResponse(SD, path, mime.c_str());
-  resp->addHeader("Accept-Ranges", "bytes");
-  req->send(resp);
+  // ?dl=1 → Content-Disposition: attachment, so phones hand the transfer to
+  // their native download manager instead of buffering it in the page.
+  sendSdFile(req, path, req->hasParam("dl"), nullptr);
 }
 
 static void handleStatus(AsyncWebServerRequest *req) {
-  char buf[200];
+  char buf[224];
   snprintf(buf, sizeof(buf),
     "{\"name\":\"mm26-nomad\",\"version\":\"%s\",\"uptime\":%lu,\"clients\":%u,"
-    "\"heap\":%lu,\"sd_ok\":%s,\"sd_size\":%lu}",
+    "\"heap\":%lu,\"streams\":%u,\"sd_ok\":%s,\"sd_size\":%lu}",
     NOMAD_VERSION,
     (unsigned long)(millis() / 1000),
     (unsigned)WiFi.softAPgetStationNum(),
     (unsigned long)ESP.getFreeHeap(),
+    (unsigned)activeFileStreams,
     sdReady ? "true" : "false",
     (unsigned long)(sdCardSizeBytes / (1024ULL * 1024ULL)));
   req->send(200, "application/json", buf);
@@ -603,13 +641,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       line-height: 1.8;
     }
     .metadata strong { text-transform: uppercase; letter-spacing: 0.03em; }
-    .loading { padding: 0.25rem 0 1.25rem; }
-    .loading-track { width: 100%; height: 10px; background: var(--bg); border: 2px solid var(--border); overflow: hidden; position: relative; }
-    .loading-fill { height: 100%; width: 0%; background: var(--acc); transition: width .15s ease; }
-    .loading-track.indeterminate .loading-fill { width: 40%; position: absolute; left: -40%; animation: loadSlide 1.1s infinite ease-in-out; }
-    @keyframes loadSlide { 0% { left: -40%; } 100% { left: 100%; } }
-    .loading-label { margin-top: 0.5rem; font-size: 0.75rem; font-weight: 800; text-align: center; }
-    .cancel-btn { display: block; margin: 0.7rem auto 0; background: #111; color: #fff; border: 2px solid var(--border); padding: 0.5rem 1.2rem; font-size: 0.72rem; font-weight: 800; cursor: pointer; }
     /* Reader container for modal */
     .reader-container {
       width: 100%;
@@ -659,7 +690,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     </div>
     <aside id="record" class="record" style="display:none;"></aside>
   </div>
-  <footer>Offline archive · Connect to <strong>MM-2026</strong> · No internet required</footer>
+  <footer>Offline archive · Visit <strong>maroons.library</strong> or <strong>192.168.4.1</strong> · No internet required</footer>
 
   <!-- Security modal (first visit) -->
   <div id="securityModal" class="modal" style="background:rgba(0,0,0,0.8);z-index:3000;">
@@ -678,14 +709,9 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         <button class="close-modal" id="closeModalBtn">&times;</button>
       </div>
       <div class="modal-actions" id="modalActions">
-        <a id="downloadBtn" href="#" target="_blank">Download</a>
+        <a id="downloadBtn" href="#" download>Download</a>
       </div>
       <div class="modal-body">
-        <div id="loadingBar" class="loading" style="display:none;">
-          <div class="loading-track"><div class="loading-fill" id="loadingFill"></div></div>
-          <div class="loading-label" id="loadingLabel">Downloading…</div>
-          <button id="cancelDownload" class="cancel-btn" style="display:none;">Cancel</button>
-        </div>
         <div class="metadata" id="metadataDiv"></div>
         <div id="readerContainer" style="display:none;" class="reader-container"></div>
       </div>
@@ -702,6 +728,21 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         localStorage.setItem('libraryWelcomeSeen', '1');
         sec.style.display = 'none';
       });
+    })();
+
+    // Captive-portal mini browsers (Android sign-in popup, iOS sheet) block
+    // file downloads. Nudge users into a real browser.
+    (function() {
+      const ua = navigator.userAgent;
+      const androidCNA = /Android/.test(ua) && /; wv/.test(ua);
+      const iosCNA = /iPhone|iPad|iPod/.test(ua) && !/Safari\//.test(ua) && !/CriOS|FxiOS/.test(ua);
+      if (!androidCNA && !iosCNA) return;
+      const bar = document.createElement('div');
+      bar.style.cssText = 'background:#111;color:#fff;padding:0.7rem 1rem;font-size:0.78rem;font-weight:700;text-align:center;line-height:1.5;';
+      bar.innerHTML = androidCNA
+        ? 'Downloads are blocked in this sign-in popup. Open <b>Chrome</b> and go to <b>maroons.library</b> (or 192.168.4.1).'
+        : 'Downloads are blocked in this sign-in view. Tap <b>Done</b>, keep the Wi-Fi connected, then open <b>Safari</b> and go to <b>maroons.library</b> (or 192.168.4.1).';
+      document.body.insertBefore(bar, document.body.firstChild);
     })();
 
     // Theme handling
@@ -725,7 +766,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     let viewMode = 'grid';
     let currentFile = null;
     let currentMeta = null;
-    let activeXhr = null;
     let isLibraryMode = true;  // true when path starts with /library
 
     const contentDiv = document.getElementById('content');
@@ -741,10 +781,6 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
     const closeModalBtn = document.getElementById('closeModalBtn');
     const modalActions = document.getElementById('modalActions');
     const readerContainer = document.getElementById('readerContainer');
-    const loadingBar = document.getElementById('loadingBar');
-    const loadingFill = document.getElementById('loadingFill');
-    const loadingLabel = document.getElementById('loadingLabel');
-    const cancelDownloadBtn = document.getElementById('cancelDownload');
 
     function formatBytes(b) {
       if (b < 1024) return b + " B";
@@ -838,7 +874,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         <strong>Type:</strong> ${file.type.toUpperCase()}${extra}<br>
         <strong>Path:</strong> ${escapeHtml(file.path)}
       `;
-      downloadBtn.href = `/file?path=${encodeURIComponent(file.path)}`;
+      downloadBtn.href = `/file?path=${encodeURIComponent(file.path)}&dl=1`;
       // Remove existing Read button if present
       let readBtn = document.getElementById('readBtnModal');
       if (readBtn) readBtn.remove();
@@ -855,78 +891,16 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
       modal.style.display = 'flex';
     }
 
-    // Download with progress (same as before)
-    function downloadFile(file) {
-      if (!file) return;
-      if (activeXhr) activeXhr.abort();
-      showLoading(`Downloading ${file.name}… 0%`, false);
-      cancelDownloadBtn.style.display = 'block';
-      const xhr = new XMLHttpRequest();
-      activeXhr = xhr;
-      xhr.open('GET', `/file?path=${encodeURIComponent(file.path)}`, true);
-      xhr.responseType = 'blob';
-      xhr.onprogress = (e) => {
-        const total = e.lengthComputable ? e.total : file.size;
-        if (total) {
-          const pct = Math.round(e.loaded / total * 100);
-          setProgress(pct);
-          loadingLabel.textContent = `Downloading… ${pct}% (${formatBytes(e.loaded)} / ${formatBytes(total)})`;
-        } else {
-          loadingLabel.textContent = `Downloading… ${formatBytes(e.loaded)}`;
-        }
-      };
-      xhr.onload = () => {
-        activeXhr = null;
-        cancelDownloadBtn.style.display = 'none';
-        if (xhr.status === 200) {
-          setProgress(100);
-          loadingLabel.textContent = 'Saving…';
-          const url = URL.createObjectURL(xhr.response);
-          const a = document.createElement('a');
-          a.href = url; a.download = file.name;
-          document.body.appendChild(a); a.click(); a.remove();
-          setTimeout(() => URL.revokeObjectURL(url), 1000);
-          setTimeout(hideLoading, 700);
-        } else loadingLabel.textContent = '⚠️ Download failed.';
-      };
-      xhr.onerror = () => { activeXhr = null; cancelDownloadBtn.style.display = 'none'; loadingLabel.textContent = '⚠️ Download failed.'; };
-      xhr.send();
-    }
-
-    function showLoading(label, indeterminate) {
-      loadingLabel.textContent = label || 'Loading…';
-      const track = document.querySelector('#loadingBar .loading-track');
-      track.classList.toggle('indeterminate', !!indeterminate);
-      loadingFill.style.width = indeterminate ? '' : '0%';
-      loadingBar.style.display = 'block';
-    }
-    function setProgress(pct) {
-      const track = document.querySelector('#loadingBar .loading-track');
-      track.classList.remove('indeterminate');
-      loadingFill.style.width = Math.max(0, Math.min(100, pct)) + '%';
-    }
-    function hideLoading() {
-      loadingBar.style.display = 'none';
-      document.querySelector('#loadingBar .loading-track').classList.remove('indeterminate');
-      loadingFill.style.width = '0%';
-      cancelDownloadBtn.style.display = 'none';
-    }
-
-    cancelDownloadBtn.onclick = () => {
-      if (activeXhr) { activeXhr.abort(); activeXhr = null; }
-      cancelDownloadBtn.style.display = 'none';
-      loadingLabel.textContent = 'Download canceled.';
-      setTimeout(hideLoading, 800);
-    };
+    // Downloads go straight through the browser's native download manager
+    // (?dl=1 makes the server send Content-Disposition: attachment). This
+    // works on Android/iOS where blob-URL downloads fail, doesn't buffer the
+    // whole file in phone RAM, and the browser shows its own progress UI.
     closeModalBtn.onclick = () => {
-      if (activeXhr) { activeXhr.abort(); activeXhr = null; }
       modal.style.display = 'none';
-      hideLoading();
       readerContainer.style.display = 'none';
       readerContainer.innerHTML = '';
     };
     window.onclick = (e) => { if (e.target === modal) closeModalBtn.click(); };
-    downloadBtn.onclick = (e) => { e.preventDefault(); downloadFile(currentFile); };
 
     // Render directory (grid or table)
     function renderDirectory(entries, isLibrary) {
@@ -936,6 +910,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
         type: e.n.split('.').pop().toLowerCase(),
         ext: e.n.split('.').pop().toLowerCase()
       }));
+      // SD card returns entries in FAT order; sort so nested folders are browsable
+      const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      dirs.sort(byName);
+      files.sort(byName);
       // Enrich with meta.json if available
       if (currentMeta && currentMeta.files) {
         for (const f of files) {
@@ -1045,9 +1023,10 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           loadDirectory(link.dataset.path);
         });
       });
-      // load meta.json only for library mode (optional)
+      // meta.json (library mode, optional) loads in parallel with the listing
+      let metaPromise = null;
       if (isLibraryMode) {
-        await loadMetaForPath(path);
+        metaPromise = loadMetaForPath(path);
       } else {
         recordAside.style.display = 'none';
         currentMeta = null;
@@ -1070,6 +1049,7 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
           delay *= 2;
         }
       }
+      if (metaPromise) await metaPromise;
       if (currentPath !== path) return;
       if (data) renderDirectory(data.entries, isLibraryMode);
       else contentDiv.innerHTML = '<div style="text-align:center; padding:2rem; color: var(--acc);">⚠️ Failed to load directory</div>';
@@ -1127,6 +1107,16 @@ static void handleAndroidProbe(AsyncWebServerRequest *req) {
   else sendCaptiveRedirect(req);
 }
 
+// Apple probes: mirror the Android logic — once this client has loaded the
+// portal, return the literal Success page so iOS/macOS dismisses the captive
+// sign-in sheet (which blocks file downloads) and the user browses from real
+// Safari instead.
+static void handleAppleProbe(AsyncWebServerRequest *req) {
+  if (portalHasSeen(req->client()->remoteIP()))
+    req->send(200, "text/html", "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+  else sendCaptiveRedirect(req);
+}
+
 static void setupHttp() {
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *r){
     portalMarkSeen(r->client()->remoteIP());
@@ -1143,11 +1133,9 @@ static void setupHttp() {
     if (url.endsWith("/")) url += "index.html";
     String path = normalizePath(url);
     if (sdReady && SD.exists(path)) {
-      AsyncWebServerResponse *resp = req->beginResponse(SD, path, mimeFor(path));
       // Let phones cache assets so repeat visits don't re-pull them from SD.
-      resp->addHeader("Cache-Control", url.startsWith("/assets/")
-                      ? "public, max-age=86400" : "public, max-age=600");
-      req->send(resp);
+      sendSdFile(req, path, false, url.startsWith("/assets/")
+                 ? "public, max-age=86400" : "public, max-age=600");
     } else {
       sendCaptiveRedirect(req);
     }
@@ -1156,8 +1144,8 @@ static void setupHttp() {
   // Captive portal probes
   server.on("/generate_204",       HTTP_GET, handleAndroidProbe);
   server.on("/gen_204",            HTTP_GET, handleAndroidProbe);
-  server.on("/hotspot-detect.html",HTTP_GET, sendCaptiveRedirect);
-  server.on("/library/test/success.html", HTTP_GET, sendCaptiveRedirect);
+  server.on("/hotspot-detect.html",HTTP_GET, handleAppleProbe);
+  server.on("/library/test/success.html", HTTP_GET, handleAppleProbe);
   server.on("/ncsi.txt",           HTTP_GET, sendCaptiveRedirect);
   server.on("/connecttest.txt",    HTTP_GET, sendCaptiveRedirect);
   server.on("/redirect",           HTTP_GET, sendCaptiveRedirect);
@@ -1265,10 +1253,10 @@ static void drawDashboardFrame() {
 }
 
 static void drawScreensaverOverlay() {
-  static const char *OVERLAY_TEXT = "MM-2026  192.168.4.1";
+  static const char *OVERLAY_TEXT = "maroons.library  192.168.4.1";
   display.setFont(&TomThumb);
   display.setTextSize(1);
-  display.fillRect(0, 56, 92, 8, SSD1306_BLACK);
+  display.fillRect(0, 56, 128, 8, SSD1306_BLACK);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(2, 62);
   display.print(OVERLAY_TEXT);
@@ -1464,6 +1452,9 @@ void setup() {
 
 void loop() {
   pollButton();
+  // Self-heal the stream counter if a disconnect callback is ever lost —
+  // with nobody connected there can be no in-flight streams.
+  if (activeFileStreams && WiFi.softAPgetStationNum() == 0) activeFileStreams = 0;
   uint32_t now = millis(), sinceBoot = now - bootMillis;
   if (dispState == ST_INTRO) {
     drawIntroFrame(sinceBoot);
